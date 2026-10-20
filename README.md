@@ -12,12 +12,51 @@ performance figures, third-party JavaScript, or external package dependencies.
 - Market-specific summaries: AUD and GBP are never added together.
 - CSV roster export, search, and agency settings.
 - Australian timezone selection and an optional UK planning workspace.
-- Administrator sign-in and an optional real Lark test-message integration.
+- Owner and Manager sign-in with server-enforced permissions.
+- Owner-only manual payment and administrative-charge records.
+- An optional real Lark test-message integration.
 
 Performance numbers are **manual cumulative records**, not live TikTok data,
 verified earnings, dated analytics, invoices, or payout calculations.
 `sarcasm_the_alliance` is initially a label only; no account is linked.
 UK planning does not establish TikTok approval for the UK market.
+
+The **Agency link** shortcut opens the TikTok URL supplied by the agency owner:
+https://www.tiktok.com/t/ZSg8eb83Q/. It is an external shortcut, not an account
+connection or a verified Backstage destination.
+
+## Access roles
+
+| Capability | Owner | Manager |
+| --- | --- | --- |
+| Creator roster, performance revenue, task management | Yes | Yes |
+| Roster CSV export and connection status | Yes | Yes |
+| Send configured Lark test message | Yes | Yes |
+| Agency administration / settings changes | Yes | No |
+| View, create, edit, delete payment records | Yes | No |
+| View, create, edit, delete administrative charges | Yes | No |
+
+The existing `AGENCY_ADMIN_TOKEN` now signs in as **Owner**; it retains full
+access. To enable **Manager**, set `AGENCY_MANAGER_TOKEN` to a different
+randomly generated token of at least 32 characters and restart. If it is not
+set, Manager login is disabled. Each role uses the same sign-in form: the server
+determines the role from the credential, not from a role selection in the browser.
+Never give the owner token to managers. Rotate a token and restart to revoke
+its access; a restart clears all sessions.
+
+Managers can still record creator **performance revenue**, which is separate
+from payments and administrative charges. They can read the agency settings
+needed for normal operations but cannot change them. Permissions are checked
+on the server, including direct API calls. The manager's state response excludes
+the finance ledger.
+
+**Payments & charges** is a manual ledger. Records have a type, description,
+AU/AUD or UK/GBP market, positive amount, record date, and status (pending,
+recorded manually, or void). Saving a record does not send money, charge anyone,
+or verify settlement. No payment processor, bank account, tax treatment, or
+commission calculation is integrated. Do not store banking or card details here.
+Records can be corrected or permanently deleted by the owner; this is not an
+immutable accounting or audit system.
 
 ## Start locally
 
@@ -73,15 +112,16 @@ implementing a connector. No main-account access is needed to use this workspace
 
 ## Before hosting or inviting a team
 
-This is an initial **single-administrator workspace**, not a complete
-enterprise agency platform. Do not share its administrator token with creators.
+This is an initial **two-role workspace**, not a complete enterprise agency
+platform. Credentials are shared per role, not individual staff accounts.
+Do not share either role's token with creators.
 
 - Put it behind HTTPS and an authenticated hosting boundary; configure the
   server's public origin as documented in `.env.example` when using a proxy.
   Do not expose the local HTTP development server directly to the internet.
 - Use a private persistent disk for the database. A single server instance is
   expected; in-memory sessions and login rate limits are not distributed.
-- Add individual accounts, role-based permissions, audit trails, and secure
+- Add individual accounts, audit trails, and secure
   account recovery before granting staff or creators direct access.
 - Establish privacy notices, retention/deletion rules, access controls, and
   backups before storing real creator information. Keep regular database
@@ -91,7 +131,7 @@ enterprise agency platform. Do not share its administrator token with creators.
   provisioned by this repository.
 
 Contracts, recruitment automation, notifications beyond the Lark test message,
-payments, commission processing, and official TikTok synchronisation are not
+payment transfers or collection, commission processing, and official TikTok synchronisation are not
 implemented. These require separately scoped work and, where applicable,
 verified platform permissions.
 

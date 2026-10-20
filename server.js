@@ -56,6 +56,15 @@ const settingsRules = {
   auTimezone: v => TIMEZONES.includes(v),
   ukEnabled: v => typeof v === 'boolean',
 };
+const financeRules = {
+  type: v => ['payment', 'administrative_charge'].includes(v),
+  description: v => string(v, 200),
+  market: v => MARKETS.includes(v),
+  amount: v => number(v, 1_000_000_000) && v > 0,
+  date: v => v !== '' && date(v),
+  status: v => ['pending', 'recorded', 'void'].includes(v),
+};
+const financeRecord = ({ amountMinor, ...record }) => ({ ...record, amount: amountMinor / 100 });
 
 function validate(body, rules, required = []) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) invalid();
@@ -100,6 +109,7 @@ function csvCell(value) {
 export function createApp({
   dbPath = process.env.AGENCY_DB_PATH || resolve(ROOT, 'data/agency.sqlite'),
   adminToken = process.env.AGENCY_ADMIN_TOKEN,
+  managerToken = process.env.AGENCY_MANAGER_TOKEN,
   publicOrigin = process.env.PUBLIC_ORIGIN,
   larkAppId = process.env.LARK_APP_ID,
   larkAppSecret = process.env.LARK_APP_SECRET,
@@ -109,6 +119,17 @@ export function createApp({
 } = {}) {
   if (typeof adminToken !== 'string' || adminToken.length < 32 || adminToken.length > 4096) {
     throw new Error('AGENCY_ADMIN_TOKEN must contain between 32 and 4096 characters.');
+  }
+  const expectedTokenHash = createHash('sha256').update(adminToken).digest();
+  let managerTokenHash;
+  if (managerToken !== undefined) {
+    if (typeof managerToken !== 'string' || managerToken.length < 32 || managerToken.length > 4096) {
+      throw new Error('AGENCY_MANAGER_TOKEN must contain between 32 and 4096 characters when set.');
+    }
+    managerTokenHash = createHash('sha256').update(managerToken).digest();
+    if (timingSafeEqual(expectedTokenHash, managerTokenHash)) {
+      throw new Error('AGENCY_MANAGER_TOKEN must differ from AGENCY_ADMIN_TOKEN.');
+    }
   }
   let trustedOrigin;
   if (publicOrigin !== undefined && publicOrigin !== '') {
@@ -150,11 +171,19 @@ export function createApp({
       auTimezone TEXT NOT NULL CHECK(auTimezone IN ('Australia/Sydney','Australia/Melbourne','Australia/Brisbane','Australia/Perth','Australia/Adelaide','Australia/Darwin','Australia/Hobart')),
       ukEnabled INTEGER NOT NULL CHECK(ukEnabled IN (0,1))
     ) STRICT;
+    CREATE TABLE IF NOT EXISTS finance (
+      id TEXT PRIMARY KEY NOT NULL,
+      type TEXT NOT NULL CHECK(type IN ('payment','administrative_charge')),
+      description TEXT NOT NULL CHECK(length(description) BETWEEN 1 AND 200),
+      market TEXT NOT NULL CHECK(market IN ('AU','UK')),
+      amountMinor INTEGER NOT NULL CHECK(amountMinor BETWEEN 1 AND 100000000000),
+      date TEXT NOT NULL CHECK(length(date) = 10 AND date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
+      status TEXT NOT NULL CHECK(status IN ('pending','recorded','void'))
+    ) STRICT;
     INSERT OR IGNORE INTO settings VALUES (1, 'The Alliance', 'sarcasm_the_alliance', 'Australia/Sydney', 0);
   `);
   const sessions = new Map();
   const attempts = new Map();
-  const expectedTokenHash = createHash('sha256').update(adminToken).digest();
   const larkConfigured = Boolean(larkAppId && larkAppSecret && larkChatId);
   const getSettings = () => {
     const { id, ...settings } = db.prepare('SELECT * FROM settings WHERE id = 1').get();
@@ -162,6 +191,7 @@ export function createApp({
   };
   const getTasks = () => db.prepare('SELECT * FROM tasks ORDER BY rowid').all().map(t => ({ ...t, done: Boolean(t.done) }));
   const getCreators = () => db.prepare('SELECT * FROM creators ORDER BY rowid').all();
+  const getFinance = () => db.prepare('SELECT * FROM finance ORDER BY rowid').all().map(financeRecord);
   const send = (res, status, data) => {
     res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
     res.end(data === undefined ? undefined : JSON.stringify(data));
@@ -240,34 +270,47 @@ export function createApp({
         attempt.count += 1;
         attempts.set(ip, attempt);
         const body = validate(await readJson(req), { token: v => typeof v === 'string' && v.length <= 4096 }, ['token']);
-        if (!timingSafeEqual(createHash('sha256').update(body.token).digest(), expectedTokenHash)) {
+        const tokenHash = createHash('sha256').update(body.token).digest();
+        const ownerMatches = timingSafeEqual(tokenHash, expectedTokenHash);
+        const managerMatches = managerTokenHash && timingSafeEqual(tokenHash, managerTokenHash);
+        if (!ownerMatches && !managerMatches) {
           throw new HttpError(401, 'Invalid credentials.');
         }
-        for (const [id, expiry] of sessions) if (expiry <= timestamp) sessions.delete(id);
+        const role = ownerMatches ? 'owner' : 'manager';
+        for (const [id, session] of sessions) if (session.expiresAt <= timestamp) sessions.delete(id);
         if (sessions.size >= 10_000) throw new HttpError(503, 'Session capacity reached.');
         sessions.delete(sessionId(req));
         const id = randomBytes(32).toString('hex');
-        sessions.set(id, timestamp + SESSION_AGE);
+        sessions.set(id, { expiresAt: timestamp + SESSION_AGE, role });
         res.setHeader('Set-Cookie', cookie(req, id, SESSION_AGE / 1000));
-        send(res, 200, { authenticated: true });
+        send(res, 200, { authenticated: true, role });
         return;
       }
       const id = sessionId(req);
-      if (!id || !sessions.has(id) || sessions.get(id) <= now()) {
+      if (!id || !sessions.has(id) || sessions.get(id).expiresAt <= now()) {
         if (id) sessions.delete(id);
         throw new HttpError(401, 'Authentication required.');
       }
+      const { role } = sessions.get(id);
+      if (role !== 'owner' && (path.startsWith('/api/finance') ||
+          (path === '/api/settings' && method === 'PATCH'))) {
+        throw new HttpError(403, 'Owner access required.');
+      }
       if (path === '/api/session' && method === 'GET') {
-        send(res, 200, { authenticated: true });
+        send(res, 200, { authenticated: true, role });
       } else if (path === '/api/logout' && method === 'POST') {
         sessions.delete(id);
         res.setHeader('Set-Cookie', cookie(req, '', 0));
         send(res, 200, { authenticated: false });
       } else if (path === '/api/state' && method === 'GET') {
         send(res, 200, {
+          role,
           creators: getCreators(), tasks: getTasks(), settings: getSettings(),
+          ...(role === 'owner' ? { finance: getFinance() } : {}),
           integrations: { tiktok: { status: 'not_connected' }, lark: { status: larkConfigured ? 'configured' : 'not_configured' } },
         });
+      } else if (path === '/api/finance' && method === 'GET') {
+        send(res, 200, { finance: getFinance() });
       } else if (path === '/api/settings' && method === 'PATCH') {
         const body = validate(await readJson(req), settingsRules);
         const settings = { ...getSettings(), ...body };
@@ -286,18 +329,21 @@ export function createApp({
         await larkTest();
         send(res, 200, { message: 'Test message sent to Lark.' });
       } else {
-        const match = /^\/api\/(creators|tasks)(?:\/([a-f0-9-]{36}))?$/u.exec(path);
+        const match = /^\/api\/(creators|tasks|finance)(?:\/([a-f0-9-]{36}))?$/u.exec(path);
         if (!match) throw new HttpError(404, 'Not found.');
         const [, table, recordId] = match;
-        const rules = table === 'creators' ? creatorRules : taskRules;
+        const rules = table === 'creators' ? creatorRules : table === 'tasks' ? taskRules : financeRules;
+        const column = key => table === 'finance' && key === 'amount' ? 'amountMinor' : key;
+        const storedValue = (key, value) => table === 'finance' && key === 'amount'
+          ? Math.round(value * 100) : typeof value === 'boolean' ? Number(value) : value;
         if (!recordId && method === 'POST') {
           const required = Object.keys(rules).filter(key => key !== 'done');
           const body = validate(await readJson(req), rules, required);
           const record = { id: randomUUID(), ...body };
           if (table === 'tasks') record.done ??= false;
           const keys = ['id', ...Object.keys(rules)];
-          db.prepare(`INSERT INTO ${table} (${keys.join(',')}) VALUES (${keys.map(() => '?').join(',')})`)
-            .run(...keys.map(key => typeof record[key] === 'boolean' ? Number(record[key]) : record[key]));
+          db.prepare(`INSERT INTO ${table} (${keys.map(column).join(',')}) VALUES (${keys.map(() => '?').join(',')})`)
+            .run(...keys.map(key => storedValue(key, record[key])));
           send(res, 201, record);
         } else if (recordId && ['PATCH', 'DELETE'].includes(method)) {
           const existing = db.prepare(`SELECT * FROM ${table} WHERE id=?`).get(recordId);
@@ -308,9 +354,9 @@ export function createApp({
           } else {
             const body = validate(await readJson(req), table === 'tasks' ? { done: taskRules.done } : rules);
             const keys = Object.keys(body);
-            db.prepare(`UPDATE ${table} SET ${keys.map(key => `${key}=?`).join(',')} WHERE id=?`)
-              .run(...keys.map(key => typeof body[key] === 'boolean' ? Number(body[key]) : body[key]), recordId);
-            const record = { ...existing, ...body };
+            db.prepare(`UPDATE ${table} SET ${keys.map(key => `${column(key)}=?`).join(',')} WHERE id=?`)
+              .run(...keys.map(key => storedValue(key, body[key])), recordId);
+            const record = { ...(table === 'finance' ? financeRecord(existing) : existing), ...body };
             if (table === 'tasks') record.done = Boolean(record.done);
             send(res, 200, record);
           }

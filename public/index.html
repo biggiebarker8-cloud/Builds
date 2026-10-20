@@ -14,9 +14,9 @@
       <div class="brand-mark">A<span>↗</span></div>
       <p class="eyebrow">THE ALLIANCE / AGENCY OPERATIONS</p>
       <h1>Your agency.<br>Your next chapter.</h1>
-      <p class="muted">A private, standalone workspace. Sign in with the administrator token configured on your server.</p>
+      <p class="muted">A private, standalone workspace. Sign in with your owner or manager token configured on the server. Your credential determines your access.</p>
       <form id="login-form">
-        <label>Administrator token<input name="token" type="password" required autocomplete="current-password"></label>
+        <label>Workspace access token<input name="token" type="password" required autocomplete="current-password"></label>
         <button type="submit">Open workspace <span aria-hidden="true">↗</span></button>
       </form>
       <p class="small muted">No TikTok or Lark password is needed.</p>
@@ -31,13 +31,15 @@
         <a href="#creators">◎ <span>Creator roster</span></a>
         <a href="#tasks">☷ <span>Operations</span></a>
         <a href="#connections">⇄ <span>Connections</span></a>
-        <a href="#settings">⚙ <span>Agency settings</span></a>
+        <a href="https://www.tiktok.com/t/ZSg8eb83Q/" target="_blank" rel="noopener noreferrer">↗ <span>Agency link</span></a>
+        <a href="#finance" data-owner-only hidden>＄ <span>Payments &amp; charges</span></a>
+        <a href="#settings" data-owner-only hidden>⚙ <span>Agency settings</span></a>
       </nav>
       <div class="sidebar-note"><span class="live-dot"></span> Independent by design<p>Your workspace stays separate from Backstage and Lark.</p></div>
       <button id="logout" class="quiet">Sign out ↗</button>
     </aside>
     <div class="main-shell">
-      <header class="topbar"><span>Workspace <span class="muted">/</span> <strong id="page-label">Overview</strong></span><div class="top-actions"><span class="badge">AU · PRIMARY</span><span class="avatar" aria-label="Agency administrator">A</span></div></header>
+      <header class="topbar"><span>Workspace <span class="muted">/</span> <strong id="page-label">Overview</strong></span><div class="top-actions"><span id="role-badge" class="badge"></span><span class="badge">AU · PRIMARY</span></div></header>
       <main>
         <section id="overview" class="page">
           <div class="page-heading"><div><p class="eyebrow">YOUR AGENCY, AT A GLANCE</p><h1>Make the next move.</h1><p class="muted">The people, priorities, and progress behind your agency.</p></div><button id="overview-add">+ Add creator</button></div>
@@ -60,8 +62,13 @@
           <div class="connection-grid"><article class="panel"><div class="integration-icon">♪</div><h2>TikTok Backstage</h2><span class="badge neutral">Not connected</span><p>This dashboard does not access your TikTok account, impersonate Backstage, or install plugins inside it.</p><ol><li>Confirm the integration permissions available to your agency with TikTok.</li><li>Obtain official documentation and approval for your markets.</li><li>Implement and verify the approved integration before enabling sync.</li></ol><p class="callout">Your handle is a workspace label, not proof of account ownership or an account link.</p></article>
           <article class="panel"><div class="integration-icon lark-icon">↗</div><h2>Lark</h2><span id="lark-status" class="badge neutral">Not configured</span><p>Optional server-side connection using Lark's official app and messaging APIs. No community plugins.</p><ol><li>Create an internal app in your Lark developer console.</li><li>Enable bot messaging permissions, publish the app, and add the bot to the intended chat.</li><li>Configure the app ID, app secret, and chat ID on your server, then restart it.</li></ol><button id="lark-test" class="secondary">Send a real test message</button><p class="small muted">Configured does not mean verified. This sends one message; it does not sync creators or calendars.</p></article></div>
         </section>
+        <section id="finance" class="page" hidden>
+          <div class="page-heading"><div><p class="eyebrow">OWNER ACCESS ONLY</p><h1>Payments &amp; charges</h1><p class="muted">Private records for payments and administrative charges.</p></div><button id="add-finance">+ Add record</button></div>
+          <p class="callout">Manual ledger only. Saving or marking a record does not send money, charge anyone, verify settlement, or connect a payment provider. Do not enter card or bank details.</p>
+          <div class="panel"><div class="table-scroll"><table><thead><tr><th>Date</th><th>Description</th><th>Type</th><th>Market</th><th>Amount</th><th>Status</th><th>Actions</th></tr></thead><tbody id="finance-rows"></tbody></table></div><p id="finance-empty" class="empty">No payment or administrative-charge records yet.</p></div>
+        </section>
         <section id="settings" class="page" hidden>
-          <div class="page-heading"><div><p class="eyebrow">MAKE IT YOURS</p><h1>Agency settings</h1><p class="muted">Australia first. Keep future expansion deliberate.</p></div></div>
+          <div class="page-heading"><div><p class="eyebrow">OWNER ADMINISTRATION</p><h1>Agency settings</h1><p class="muted">Australia first. Keep future expansion deliberate. Managers cannot change these settings.</p></div></div>
           <form id="settings-form" class="panel settings-form"><label>Agency name<input name="agencyName" required maxlength="100"></label><label>TikTok handle (label only)<input name="accountHandle" required maxlength="100"></label><label>Australian timezone<select name="auTimezone"><option>Australia/Sydney</option><option>Australia/Melbourne</option><option>Australia/Brisbane</option><option>Australia/Perth</option><option>Australia/Adelaide</option><option>Australia/Darwin</option><option>Australia/Hobart</option></select></label><label class="checkbox-label"><input type="checkbox" name="ukEnabled"> Enable UK planning workspace</label><p class="small muted">UK planning is not TikTok approval. AUD and GBP are kept separate; no currency conversion is applied.</p><button type="submit">Save settings</button></form>
         </section>
       </main>
@@ -70,6 +77,19 @@
   </div>
   <dialog id="creator-dialog" aria-labelledby="creator-dialog-title"><form id="creator-form"><div class="section-heading"><h2 id="creator-dialog-title">Add creator</h2><button type="button" class="quiet close-dialog" aria-label="Close">✕</button></div><input type="hidden" name="id"><label>TikTok handle<input name="handle" required maxlength="100" placeholder="@creator"></label><div class="form-grid"><label>Market<select name="market"><option value="AU">Australia · AUD</option><option value="UK">UK · planning · GBP</option></select></label><label>Status<select name="status"><option value="prospect">Prospect</option><option value="onboarding">Onboarding</option><option value="active">Active</option><option value="paused">Paused</option></select></label></div><label>Manager<input name="manager" maxlength="100"></label><div class="form-grid"><label>Recorded LIVE hours<input name="liveHours" type="number" min="0" max="1000000" step="0.01" value="0" required></label><label>Target hours<input name="targetHours" type="number" min="0" max="1000000" step="0.01" value="0" required></label></div><label>Recorded revenue (market currency)<input name="revenue" type="number" min="0" max="1000000000" step="0.01" value="0" required></label><p class="small muted">Manual cumulative records, not verified TikTok earnings or a dated reporting period.</p><button type="submit">Save creator</button></form></dialog>
   <dialog id="task-dialog" aria-labelledby="task-dialog-title"><form id="task-form"><div class="section-heading"><h2 id="task-dialog-title">New task</h2><button type="button" class="quiet close-dialog" aria-label="Close">✕</button></div><label>Task<input name="title" required maxlength="200" placeholder="What needs to happen next?"></label><label>Market<select name="market"><option value="AU">Australia</option><option value="UK">UK · planning</option></select></label><label>Due date (optional)<input name="dueDate" type="date"></label><button type="submit">Create task</button></form></dialog>
+  <dialog id="finance-dialog" aria-labelledby="finance-dialog-title">
+    <form id="finance-form">
+      <div class="section-heading"><h2 id="finance-dialog-title">Add financial record</h2><button type="button" class="quiet close-dialog" aria-label="Close">✕</button></div>
+      <input type="hidden" name="id">
+      <label>Type<select name="type"><option value="payment">Payment</option><option value="administrative_charge">Administrative charge</option></select></label>
+      <label>Description<input name="description" required maxlength="200" placeholder="Purpose or reference — no banking details"></label>
+      <div class="form-grid"><label>Market / currency<select name="market"><option value="AU">Australia · AUD</option><option value="UK">UK · GBP</option></select></label><label>Amount<input name="amount" type="number" min="0.01" max="1000000000" step="0.01" required></label></div>
+      <label>Record date<input name="date" type="date" required></label>
+      <label>Status<select name="status"><option value="pending">Pending</option><option value="recorded">Recorded manually</option><option value="void">Void</option></select></label>
+      <p class="small muted">Recordkeeping only. No funds are moved or charged.</p>
+      <button type="submit">Save record</button>
+    </form>
+  </dialog>
   <div id="notification" role="status" aria-live="polite" hidden></div>
 </body>
 </html>

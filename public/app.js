@@ -1,7 +1,9 @@
 const $ = (selector) => document.querySelector(selector);
 let state;
 let notificationTimer;
-const pages = ['overview', 'creators', 'tasks', 'connections', 'settings'];
+const pages = ['overview', 'creators', 'tasks', 'connections', 'finance', 'settings'];
+const ownerPages = ['finance', 'settings'];
+const isOwner = () => state?.role === 'owner';
 
 function notify(message) {
   $('#notification').textContent = message;
@@ -17,7 +19,7 @@ async function api(path, options = {}) {
   });
   if (response.status === 401) {
     showLogin();
-    throw new Error('Please sign in with your administrator token.');
+    throw new Error('Please sign in with your workspace access token.');
   }
   if (!response.ok) {
     const error = await response.json().catch(() => ({}));
@@ -51,10 +53,15 @@ function showLogin() {
   $('#workspace').hidden = true;
   document.querySelectorAll('dialog[open]').forEach((dialog) => dialog.close());
   state = undefined;
+  $('#finance-rows').replaceChildren();
+  $('#finance-form').reset();
+  $('#role-badge').textContent = '';
+  document.querySelectorAll('[data-owner-only]').forEach((element) => { element.hidden = true; });
 }
 
 function route() {
-  const page = pages.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'overview';
+  let page = pages.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'overview';
+  if (ownerPages.includes(page) && !isOwner()) page = 'overview';
   document.querySelectorAll('.page').forEach((section) => { section.hidden = section.id !== page; });
   document.querySelectorAll('nav a').forEach((link) => {
     const active = link.hash === `#${page}`;
@@ -64,7 +71,7 @@ function route() {
   });
   $('#page-label').textContent = {
     overview: 'Overview', creators: 'Creator roster', tasks: 'Operations',
-    connections: 'Connections', settings: 'Agency settings',
+    connections: 'Connections', finance: 'Payments & charges', settings: 'Agency settings',
   }[page];
 }
 
@@ -146,6 +153,13 @@ function taskRow(task, compact = false) {
 }
 
 function render() {
+  document.querySelectorAll('[data-owner-only]').forEach((element) => { element.hidden = !isOwner(); });
+  $('#role-badge').textContent = isOwner() ? 'OWNER' : 'MANAGER';
+  if (!isOwner()) {
+    $('#finance-dialog').close();
+    $('#finance-form').reset();
+  }
+  $('#settings-form').querySelectorAll('input, select, button').forEach((element) => { element.disabled = !isOwner(); });
   const settings = state.settings;
   const form = $('#settings-form');
   ['agencyName', 'accountHandle', 'auTimezone'].forEach((key) => { form.elements[key].value = settings[key]; });
@@ -161,9 +175,47 @@ function render() {
   $('#lark-test').disabled = !configured;
   renderSummary();
   renderCreators();
+  renderFinance();
   $('#task-list').replaceChildren(...state.tasks.map((task) => taskRow(task)));
   if (!state.tasks.length) $('#task-list').append(node('p', 'No tasks yet. Start with an onboarding or creator-support priority.', 'empty'));
   updateClock();
+  route();
+}
+
+function renderFinance() {
+  $('#finance-rows').replaceChildren();
+  if (!isOwner()) return;
+  const records = state.finance || [];
+  $('#finance-empty').hidden = records.length > 0;
+  $('#finance-rows').replaceChildren(...records.map((record) => {
+    const row = node('tr');
+    [record.date, record.description, record.type === 'payment' ? 'Payment' : 'Administrative charge',
+      marketLabel(record.market), currency(record.amount, record.market),
+      record.status === 'recorded' ? 'Recorded manually' : record.status].forEach((value) => row.append(node('td', value)));
+    const cell = node('td');
+    const actions = node('div', undefined, 'row-actions');
+    actions.append(action('Edit', () => openFinance(record)), action('Delete', async () => {
+      if (!confirm('Permanently delete this financial record? This cannot be undone.')) return;
+      await api(`/api/finance/${record.id}`, { method: 'DELETE' });
+      await refresh();
+      notify('Financial record deleted.');
+    }));
+    cell.append(actions);
+    row.append(cell);
+    return row;
+  }));
+}
+
+function openFinance(record) {
+  if (!isOwner()) return;
+  const form = $('#finance-form');
+  form.reset();
+  form.elements.id.value = '';
+  $('#finance-dialog-title').textContent = record ? 'Edit financial record' : 'Add financial record';
+  if (record) Object.keys(record).forEach((key) => {
+    if (form.elements[key]) form.elements[key].value = record[key];
+  });
+  $('#finance-dialog').showModal();
 }
 
 function updateClock() {
@@ -240,12 +292,31 @@ $('#task-form').addEventListener('submit', (event) => {
 
 $('#settings-form').addEventListener('submit', (event) => {
   event.preventDefault();
+  if (!isOwner()) return;
   run(event.submitter, async () => {
     const data = Object.fromEntries(new FormData(event.target));
     data.ukEnabled = event.target.elements.ukEnabled.checked;
     await api('/api/settings', { method: 'PATCH', body: JSON.stringify(data) });
     await refresh();
     notify('Agency settings saved.');
+  });
+});
+
+$('#add-finance').addEventListener('click', () => openFinance());
+$('#finance-form').addEventListener('submit', (event) => {
+  event.preventDefault();
+  if (!isOwner()) return;
+  run(event.submitter, async () => {
+    const data = Object.fromEntries(new FormData(event.target));
+    const id = data.id;
+    delete data.id;
+    data.amount = Number(data.amount);
+    await api(id ? `/api/finance/${id}` : '/api/finance', {
+      method: id ? 'PATCH' : 'POST', body: JSON.stringify(data),
+    });
+    $('#finance-dialog').close();
+    await refresh();
+    notify('Financial record saved. No funds were moved.');
   });
 });
 
