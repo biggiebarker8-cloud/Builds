@@ -5,6 +5,7 @@ import { promisify } from 'node:util';
 import { chmodSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { handleMcp, larkOpenApi, messageRules } from './lark-tools.js';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const MAX_BODY = 64 * 1024;
@@ -118,6 +119,7 @@ export function createApp({
   larkAppId = process.env.LARK_APP_ID,
   larkAppSecret = process.env.LARK_APP_SECRET,
   larkChatId = process.env.LARK_CHAT_ID,
+  larkAutomationToken = process.env.LARK_AUTOMATION_TOKEN,
   fetchImpl = globalThis.fetch,
   now = Date.now,
 } = {}) {
@@ -133,6 +135,17 @@ export function createApp({
     managerTokenHash = createHash('sha256').update(managerToken).digest();
     if (timingSafeEqual(expectedTokenHash, managerTokenHash)) {
       throw new Error('AGENCY_MANAGER_TOKEN must differ from AGENCY_ADMIN_TOKEN.');
+    }
+  }
+  let automationTokenHash;
+  if (larkAutomationToken !== undefined) {
+    if (typeof larkAutomationToken !== 'string' || larkAutomationToken.length < 32 || larkAutomationToken.length > 4096) {
+      throw new Error('LARK_AUTOMATION_TOKEN must contain between 32 and 4096 characters when set.');
+    }
+    automationTokenHash = createHash('sha256').update(larkAutomationToken).digest();
+    if (timingSafeEqual(expectedTokenHash, automationTokenHash) ||
+        (managerTokenHash && timingSafeEqual(managerTokenHash, automationTokenHash))) {
+      throw new Error('LARK_AUTOMATION_TOKEN must differ from dashboard tokens.');
     }
   }
   let trustedOrigin;
@@ -194,6 +207,7 @@ export function createApp({
   const sessions = new Map();
   const attempts = new Map();
   const passwordAttempts = new Map();
+  const larkAttempts = new Map();
   const updatingRoles = new Set();
   let passwordOperations = 0;
   const getCredential = db.prepare('SELECT salt, hash FROM credentials WHERE role=?');
@@ -215,19 +229,32 @@ export function createApp({
     try { return await operation(); }
     finally { passwordOperations -= 1; }
   };
-  const rateLimit = (req, res, map, message) => {
+  const rateLimit = (req, res, map, message, window = 15 * 60 * 1000) => {
     const timestamp = now();
     for (const [key, attempt] of map) if (attempt.until <= timestamp) map.delete(key);
     const ip = req.socket.remoteAddress;
-    const attempt = map.get(ip) || { count: 0, until: timestamp + 15 * 60 * 1000 };
+    const attempt = map.get(ip) || { count: 0, until: timestamp + window };
     if (attempt.count >= 10 || (!map.has(ip) && map.size >= 10_000)) {
-      res.setHeader('Retry-After', '900');
+      res.setHeader('Retry-After', String(window / 1000));
       throw new HttpError(429, message);
     }
     attempt.count += 1;
     map.set(ip, attempt);
   };
   const larkConfigured = Boolean(larkAppId && larkAppSecret && larkChatId);
+  const larkStatus = () => ({
+    status: larkConfigured ? 'configured' : 'not_configured',
+    capabilities: ['send_message'], note: 'Configuration does not verify connectivity.',
+  });
+  const requireAutomation = req => {
+    if (!automationTokenHash) throw new HttpError(503, 'Lark automation is not configured.');
+    const parts = (req.headers.authorization || '').split(' ');
+    const value = parts[1] || '';
+    if (parts.length !== 2 || parts[0].toLowerCase() !== 'bearer' || !value || value.length > 4096 ||
+        !timingSafeEqual(createHash('sha256').update(value).digest(), automationTokenHash)) {
+      throw new HttpError(401, 'Authentication required.');
+    }
+  };
   const getSettings = () => {
     const { id, ...settings } = db.prepare('SELECT * FROM settings WHERE id = 1').get();
     return { ...settings, ukEnabled: Boolean(settings.ukEnabled) };
@@ -262,8 +289,9 @@ export function createApp({
     sessions.set(id, { expiresAt: timestamp + SESSION_AGE, role });
     res.setHeader('Set-Cookie', cookie(req, id, SESSION_AGE / 1000));
   };
-  async function larkTest() {
+  async function sendLarkMessage(req, res, message, test = false) {
     if (!larkConfigured) throw new HttpError(503, 'Lark is not configured.');
+    rateLimit(req, res, larkAttempts, 'Too many Lark messages. Try again later.', 60_000);
     try {
       const signal = AbortSignal.timeout(10_000);
       const authResponse = await fetchImpl('https://open.larksuite.com/open-apis/auth/v3/tenant_access_token/internal', {
@@ -279,12 +307,12 @@ export function createApp({
         headers: { 'Content-Type': 'application/json', Authorization: ['Bearer', auth.tenant_access_token].join(' ') },
         body: JSON.stringify({
           receive_id: larkChatId, msg_type: 'text',
-          content: JSON.stringify({ text: 'The Alliance: Lark integration test message.' }),
+          content: JSON.stringify({ text: message }),
         }), signal, redirect: 'error',
       });
       if (!messageResponse.ok || (await messageResponse.json()).code !== 0) throw new Error();
     } catch {
-      throw new HttpError(502, 'Unable to send the Lark test message.');
+      throw new HttpError(502, test ? 'Unable to send the Lark test message.' : 'Unable to send the Lark message.');
     }
   }
   const server = http.createServer({ maxHeaderSize: 16 * 1024 }, async (req, res) => {
@@ -297,6 +325,12 @@ export function createApp({
     try {
       const path = new URL(req.url, 'http://localhost').pathname;
       const method = req.method;
+      if (path === '/mcp' && method !== 'POST') {
+        res.setHeader('Allow', 'POST');
+        throw new HttpError(405, 'Use POST.');
+      }
+      const machineRoute = path === '/mcp' || path.startsWith('/api/automation/');
+      if (machineRoute) requireAutomation(req);
       if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
         const origin = req.headers.origin;
         const protocol = req.socket.encrypted ? 'https' : 'http';
@@ -307,6 +341,29 @@ export function createApp({
           throw new HttpError(413, 'Request body too large.');
         }
         req.bodyBytes = await readBody(req);
+      }
+      if (path === '/mcp') {
+        await handleMcp(req, res, {
+          send, status: larkStatus, sendMessage: message => sendLarkMessage(req, res, message),
+        });
+        return;
+      }
+      if (path === '/api/openapi.json' && method === 'GET') {
+        if (!trustedOrigin?.startsWith('https://')) {
+          throw new HttpError(503, 'Configure HTTPS PUBLIC_ORIGIN to use the OpenAPI schema.');
+        }
+        send(res, 200, larkOpenApi(trustedOrigin));
+        return;
+      }
+      if (machineRoute) {
+        if (path === '/api/automation/lark/status' && method === 'GET') {
+          send(res, 200, larkStatus());
+        } else if (path === '/api/automation/lark/messages' && method === 'POST') {
+          const body = validate(await readJson(req), messageRules, ['message']);
+          await sendLarkMessage(req, res, body.message.trim());
+          send(res, 200, { message: 'Message sent to Lark.' });
+        } else throw new HttpError(404, 'Not found.');
+        return;
       }
       if (!path.startsWith('/api/')) {
         const entry = STATIC_FILES.get(path);
@@ -407,8 +464,12 @@ export function createApp({
         });
         res.end(rows.map(row => row.map(csvCell).join(',')).join('\r\n') + '\r\n');
       } else if (path === '/api/integrations/lark/test' && method === 'POST') {
-        await larkTest();
+        await sendLarkMessage(req, res, 'The Alliance: Lark integration test message.', true);
         send(res, 200, { message: 'Test message sent to Lark.' });
+      } else if (path === '/api/integrations/lark/messages' && method === 'POST') {
+        const body = validate(await readJson(req), messageRules, ['message']);
+        await sendLarkMessage(req, res, body.message.trim());
+        send(res, 200, { message: 'Message sent to Lark.' });
       } else {
         const match = /^\/api\/(creators|tasks|finance)(?:\/([a-f0-9-]{36}))?$/u.exec(path);
         if (!match) throw new HttpError(404, 'Not found.');
@@ -452,7 +513,7 @@ export function createApp({
   server.requestTimeout = 15_000;
   server.headersTimeout = 10_000;
   server.keepAliveTimeout = 5_000;
-  server.on('close', () => { sessions.clear(); attempts.clear(); passwordAttempts.clear(); db.close(); });
+  server.on('close', () => { sessions.clear(); attempts.clear(); passwordAttempts.clear(); larkAttempts.clear(); db.close(); });
   return server;
 }
 

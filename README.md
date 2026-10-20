@@ -142,6 +142,81 @@ been verified. A successful test confirms that message only. There is no
 automatic roster, calendar, or task sync. Feishu-specific deployments are not
 supported by this connector.
 
+Lark Pro does not bypass app approval or bot permissions. In **Connections**,
+both owners and managers can also write a message and explicitly send it to
+the configured chat. Messages are limited to 2,000 characters. All messaging
+surfaces share a rate limit of ten sends per minute per direct client IP.
+Behind a reverse proxy, multiple users may share that limit.
+
+### Lark API, MCP, and ChatGPT Actions
+
+Machine access uses a **separate, Lark-only** `LARK_AUTOMATION_TOKEN` of
+32–4096 random characters, distinct from both workspace tokens. Leave it unset
+to disable machine access. Store it in server secrets and client authentication
+settings, not in Git, prompts, or a shared chat. This token permits sending to
+your configured chat: anyone holding it has that capability. It cannot sign in
+to the dashboard or read creators, tasks, or finance records.
+
+| Interface | Access | Purpose |
+| --- | --- | --- |
+| `POST /api/integrations/lark/messages` | Signed-in workspace session | Send `{message}` from the dashboard |
+| `GET /api/automation/lark/status` | Automation bearer token | Configuration status, not a verified connection |
+| `POST /api/automation/lark/messages` | Automation bearer token | Send `{message}` to the fixed server-configured chat |
+| `POST /mcp` | Automation bearer token | Stateless MCP JSON-RPC with Lark-only tools |
+| `GET /api/openapi.json` | Public schema, no credentials | Import schema for custom GPT Actions |
+
+The MCP endpoint implements JSON responses for the 2025-06-18 Streamable HTTP
+protocol: initialize, ping, tools/list, tools/call, and notification handling.
+Only `lark_status` and `lark_send_message` are exposed. Configure the full HTTPS
+endpoint in a compatible MCP client's settings and its bearer authentication
+privately. It does not implement OAuth, SSE, subscriptions, dashboard access,
+or the ability to choose arbitrary chat recipients.
+
+For **ChatGPT**, use a custom GPT with **Actions**, where supported by your
+plan and workspace policies:
+
+1. Deploy this server over HTTPS and set `PUBLIC_ORIGIN` to its external origin.
+   The generated schema is unavailable until an HTTPS origin is configured.
+2. Import the hosted `/api/openapi.json` schema into the GPT's Actions settings.
+3. Configure API-key authentication using **Bearer** and your separate
+   `LARK_AUTOMATION_TOKEN` in the private authentication field.
+4. Keep the GPT private or restrict its audience. Shared Actions credentials
+   can allow GPT users to send messages to your configured agency chat.
+5. Review the requested message and confirm the consequential send action.
+   Status checks do not send anything.
+
+This is an integration endpoint and schema, not an automatically installed
+ChatGPT plugin. Direct ChatGPT MCP connections may require a different
+authentication flow and are **not guaranteed** by this bearer-only endpoint.
+No OpenAI API key is needed by this server. No AI provider is contacted by
+the dashboard itself. Never paste passwords or personal/financial records into
+messages; a connected AI client and the receiving Lark chat may see that content.
+No live connectivity has been verified without your actual app permissions.
+
+### AnyCross workflow connection
+
+The **Connections** page includes an **AnyCross** setup section and the current
+host's Lark messaging endpoint. Use the deployed **HTTPS** URL, not a local
+development address. No workflow is installed automatically.
+
+1. In your own [AnyCross workspace](https://anycross.larksuite.com/), create a
+   workflow with an HTTP request action, if available to your organisation.
+2. Set method `POST`, URL `https://YOUR_HOST/api/automation/lark/messages`, and
+   content type `application/json`.
+3. Select the bearer option for HTTP authentication using the separate
+   `LARK_AUTOMATION_TOKEN` in private credentials, not a shared text field or chat.
+4. Send a JSON object with a `message` string mapped from your intended workflow
+   input. Explicitly test with a non-sensitive message.
+
+The response succeeds only after the official Lark API accepts the message.
+The API cannot select other chats or read dashboard/finance records. AnyCross
+retries can duplicate messages; configure retries and workflow scope accordingly.
+Lark Pro does not establish AnyCross entitlement or grant app permissions;
+confirm HTTP connector and credential-storage availability with your administrator
+and [AnyCross's official documentation](https://anycross.larksuite.com/documentation/connector/core).
+No direct AnyCross webhook URL, app secret, or platform password is collected by
+this dashboard.
+
 ## TikTok access
 
 TikTok is deliberately **not connected**. The application does not scrape
@@ -170,7 +245,7 @@ Do not share either role's token with creators.
 - Arrange hosting, DNS, monitoring, and tested restore procedures. None are
   provisioned by this repository.
 
-Contracts, recruitment automation, notifications beyond the Lark test message,
+Contracts, recruitment automation, automated notifications beyond explicit Lark messaging,
 payment transfers or collection, commission processing, and official TikTok synchronisation are not
 implemented. These require separately scoped work and, where applicable,
 verified platform permissions.

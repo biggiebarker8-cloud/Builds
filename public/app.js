@@ -56,6 +56,7 @@ function showLogin() {
   $('#finance-rows').replaceChildren();
   $('#finance-form').reset();
   $('#password-form').reset();
+  $('#lark-message-form').reset();
   $('#password-status').textContent = '';
   $('#role-badge').textContent = '';
   document.querySelectorAll('[data-owner-only]').forEach((element) => { element.hidden = true; });
@@ -155,6 +156,7 @@ function taskRow(task, compact = false) {
 }
 
 function render() {
+  $('#anycross-endpoint').value = new URL('/api/automation/lark/messages', window.location.origin).href;
   document.querySelectorAll('[data-owner-only]').forEach((element) => { element.hidden = !isOwner(); });
   $('#role-badge').textContent = isOwner() ? 'OWNER' : 'MANAGER';
   if (!isOwner()) {
@@ -175,6 +177,7 @@ function render() {
   $('#lark-status').textContent = configured ? 'Configured · not verified' : 'Not configured';
   $('#lark-overview').textContent = configured ? 'Configured · not verified' : 'Not configured';
   $('#lark-test').disabled = !configured;
+  $('#lark-send').disabled = !configured;
   renderSummary();
   renderCreators();
   renderFinance();
@@ -380,6 +383,23 @@ $('#lark-test').addEventListener('click', (event) => run(event.currentTarget, as
   const result = await api('/api/integrations/lark/test', { method: 'POST' });
   notify(result.message);
 }));
+
+$('#lark-message-form').addEventListener('submit', (event) => {
+  event.preventDefault();
+  const form = event.target;
+  if (!form.elements.message.value.trim()) {
+    notify('Enter a message before sending.');
+    return;
+  }
+  if (!confirm('Send this message now to your configured Lark chat?')) return;
+  run(event.submitter, async () => {
+    const result = await api('/api/integrations/lark/messages', {
+      method: 'POST', body: JSON.stringify({ message: form.elements.message.value }),
+    });
+    form.reset();
+    notify(result.message);
+  });
+});
 
 $('#creator-search').addEventListener('input', () => state && renderCreators());
 $('#creator-market').addEventListener('change', () => state && renderCreators());

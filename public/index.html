@@ -68,6 +68,34 @@
           <div class="page-heading"><div><p class="eyebrow">OFFICIAL ACCESS ONLY</p><h1>Connections</h1><p class="muted">Standalone first. Connect services only when you are ready.</p></div></div>
           <p class="callout">TikTok for Business and TikTok Ads Manager open separately using your own TikTok sign-in. These shortcuts do not connect or sync your accounts. Workspace roles do not control TikTok's external advertising, payment, or billing permissions; configure those within TikTok before inviting managers.</p>
           <article class="panel">
+            <p class="eyebrow">LARK API · MCP · CHATGPT ACTIONS</p>
+            <h2>Connect your tools, with permission</h2>
+            <p>Lark Pro still requires an approved Lark app, bot messaging permissions, and the bot in your chosen chat. The API sends real messages only after that configuration is complete.</p>
+            <form id="lark-message-form" class="settings-form">
+              <label>Message to the configured Lark chat<textarea name="message" rows="3" required maxlength="2000" placeholder="Write a message for your agency chat"></textarea></label>
+              <button type="submit" id="lark-send">Send to Lark</button>
+            </form>
+            <p class="small muted">This sends immediately to the server-configured chat. Do not include passwords, credentials, banking details, or personal information that should not be shared there.</p>
+            <p><strong>MCP:</strong> <code>/mcp</code> exposes Lark status and send-message tools to clients supporting manually configured bearer authentication. No dashboard, creator, or finance access is provided.</p>
+            <p><strong>ChatGPT:</strong> <a href="/api/openapi.json" target="_blank" rel="noopener noreferrer">Open Actions schema ↗</a> for a custom GPT where Actions are supported. Hosting must first have an HTTPS public origin configured. Add the separate automation token privately in the client's authentication settings, never in prompts.</p>
+            <p class="small muted">These tools are not automatically installed or linked to your accounts. Direct ChatGPT MCP connections are not guaranteed: this endpoint does not implement OAuth. No email service or public website is deployed by adding these endpoints.</p>
+          </article>
+          <article class="panel">
+            <p class="eyebrow">LARK ANYCROSS</p>
+            <h2>Connect an AnyCross workflow</h2>
+            <span class="badge neutral">External setup required · not verified</span>
+            <p>Use an AnyCross HTTP action to send a message through this workspace's limited Lark API. This does not install or activate a workflow in your Lark account.</p>
+            <label>Message endpoint (use the deployed HTTPS address)<input id="anycross-endpoint" type="url" readonly></label>
+            <ol>
+              <li>Open your AnyCross workspace and create a workflow with an HTTP request action.</li>
+              <li>Set its method to POST and Content-Type to application/json.</li>
+              <li>Store the separate LARK_AUTOMATION_TOKEN privately in AnyCross's available credential storage. Select the bearer option for HTTP authentication and supply that token.</li>
+              <li>Map the JSON body field <code>message</code> to your workflow's intended text (up to 2,000 characters), then run an explicit test.</li>
+            </ol>
+            <p class="small muted">A successful request sends immediately to the one configured Lark chat. It does not sync the roster or finance records. Check AnyCross availability and HTTP capabilities with your workspace administrator; Lark Pro alone does not guarantee AnyCross access. Treat workflow retries as potential duplicate messages.</p>
+            <a href="https://anycross.larksuite.com/" target="_blank" rel="noopener noreferrer">Open Lark AnyCross ↗</a>
+          </article>
+          <article class="panel">
             <p class="eyebrow">FACEBOOK &amp; INSTAGRAM ADVERTISING</p>
             <h2>Official Meta tools</h2>
             <span class="badge neutral">Not connected · external tools only</span>

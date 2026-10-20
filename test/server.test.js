@@ -4,7 +4,6 @@ import { once } from 'node:events';
 import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { scrypt as scryptCallback } from 'node:crypto';
 import { promisify } from 'node:util';
-import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { request as httpRequest } from 'node:http';
 import { DatabaseSync } from 'node:sqlite';
@@ -17,13 +16,13 @@ const task = { title: 'Review creator', market: 'AU', dueDate: '2026-10-21' };
 const finance = { type: 'payment', description: 'Private manual payment', market: 'AU', amount: 12345.67, date: '2026-10-21', status: 'pending' };
 
 async function fixture(t, options = {}) {
-  const directory = mkdtempSync(resolve(tmpdir(), 'agency-test-'));
+  const directory = mkdtempSync(resolve('agency-test-'));
   const dbPath = resolve(directory, 'agency.sqlite');
   let server;
   let base;
   let cookie = '';
   async function start(overrides = {}) {
-    server = createApp({ dbPath, adminToken: TOKEN, managerToken: undefined, publicOrigin: '', larkAppId: '', larkAppSecret: '', larkChatId: '', ...options, ...overrides });
+    server = createApp({ dbPath, adminToken: TOKEN, managerToken: undefined, larkAutomationToken: undefined, publicOrigin: '', larkAppId: '', larkAppSecret: '', larkChatId: '', ...options, ...overrides });
     server.listen(0, '127.0.0.1');
     await once(server, 'listening');
     base = `http://127.0.0.1:${server.address().port}`;
@@ -735,4 +734,294 @@ test('Lark uses official URLs, sends real requests, and sanitizes upstream failu
   const failure = await f.request('/api/integrations/lark/test', 'POST');
   assert.equal(failure.status, 502);
   assert.doesNotMatch(await failure.text(), /private/);
+});
+
+const AUTOMATION_TOKEN = 'unit-test-automation-separate-credential-123456';
+const automationHeaders = { Authorization: ['Bearer', AUTOMATION_TOKEN].join(' ') };
+const rpc = (method, params, id = 1) => ({ jsonrpc: '2.0', id, method, ...(params === undefined ? {} : { params }) });
+const initialized = {
+  protocolVersion: '2025-06-18', capabilities: {},
+  clientInfo: { name: 'test-client', version: '1.0.0' },
+};
+const statusResult = configured => ({
+  status: configured ? 'configured' : 'not_configured',
+  capabilities: ['send_message'], note: 'Configuration does not verify connectivity.',
+});
+function larkMock() {
+  const calls = [];
+  return {
+    calls,
+    options: {
+      larkAutomationToken: AUTOMATION_TOKEN,
+      larkAppId: 'private-app-id', larkAppSecret: 'private-app-secret', larkChatId: 'private-chat-id',
+      fetchImpl: async (url, options) => {
+        calls.push({ url, options });
+        return { ok: true, json: async () => url.includes('/auth/') ?
+          { code: 0, tenant_access_token: 'private-tenant-token' } : { code: 0 } };
+      },
+    },
+  };
+}
+
+test('automation credentials are optional, strong, distinct, and isolated from dashboard authentication', async t => {
+  for (const larkAutomationToken of ['', 'short', null, 123, 'x'.repeat(4097), TOKEN, MANAGER_TOKEN]) {
+    assert.throws(() => createApp({
+      dbPath: ':memory:', adminToken: TOKEN, managerToken: MANAGER_TOKEN, larkAutomationToken,
+    }), /LARK_AUTOMATION_TOKEN/);
+  }
+  const disabled = await fixture(t);
+  for (const [path, method] of [['/api/automation/lark/status', 'GET'], ['/api/automation/lark/messages', 'POST'], ['/mcp', 'POST']]) {
+    assert.equal((await disabled.request(path, method, undefined, automationHeaders)).status, 503);
+  }
+  const f = await fixture(t, { larkAutomationToken: AUTOMATION_TOKEN });
+  assert.equal((await f.request('/api/login', 'POST', { token: AUTOMATION_TOKEN })).status, 401);
+  for (const [path, method, body] of [
+    ['/api/state', 'GET'], ['/api/finance', 'GET'], ['/api/export', 'GET'], ['/api/security', 'GET'],
+    ['/api/settings', 'PATCH', { agencyName: 'no' }], ['/api/security/password', 'PUT', {}],
+    ['/api/integrations/lark/messages', 'POST', { message: 'no' }],
+  ]) assert.equal((await f.request(path, method, body, automationHeaders)).status, 401);
+  await f.login();
+  for (const path of ['/mcp', '/api/automation/lark/messages']) {
+    assert.equal((await f.request(path, 'POST', {})).status, 401);
+  }
+  for (const token of [TOKEN, MANAGER_TOKEN, 'wrong', '']) {
+    const response = await f.request('/api/automation/lark/status', 'GET', undefined, { Authorization: ['Bearer', token].join(' ') });
+    assert.equal(response.status, 401);
+    assert.deepEqual(await response.json(), { error: 'Authentication required.' });
+  }
+  const status = await f.request('/api/automation/lark/status', 'GET', undefined, automationHeaders);
+  assert.deepEqual(await status.json(), statusResult(false));
+});
+
+test('dashboard roles and machine API send only validated trimmed text to the fixed Lark chat', async t => {
+  const mock = larkMock();
+  const f = await fixture(t, { ...mock.options, managerToken: MANAGER_TOKEN });
+  for (const path of ['/api/integrations/lark/messages', '/api/automation/lark/messages']) {
+    if (path.includes('/integrations/')) await f.login(MANAGER_TOKEN);
+    for (const body of [null, [], {}, { message: '' }, { message: ' \n\t ' }, { message: 1 },
+      { message: 'x'.repeat(2001) }, { message: 'text', chat_id: 'another' }, { message: 'text', receive_id: 'another' }]) {
+      assert.equal((await f.request(path, 'POST', body, automationHeaders)).status, 400);
+    }
+    const response = await f.request(path, 'POST', { message: '  Hi Lark\nSecond line  ' }, automationHeaders);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { message: 'Message sent to Lark.' });
+  }
+  await f.login();
+  assert.equal((await f.request('/api/integrations/lark/messages', 'POST', { message: 'x'.repeat(2000) })).status, 200);
+  assert.equal(mock.calls.length, 6);
+  for (let i = 0; i < mock.calls.length; i += 2) {
+    assert.equal(mock.calls[i].url, 'https://open.larksuite.com/open-apis/auth/v3/tenant_access_token/internal');
+    assert.deepEqual(JSON.parse(mock.calls[i].options.body), { app_id: 'private-app-id', app_secret: 'private-app-secret' });
+    assert.equal(mock.calls[i + 1].url, 'https://open.larksuite.com/open-apis/im/v1/messages?receive_id_type=chat_id');
+    assert.equal(mock.calls[i + 1].options.headers.Authorization, ['Bearer', 'private-tenant-token'].join(' '));
+    assert.deepEqual(JSON.parse(mock.calls[i + 1].options.body), {
+      receive_id: 'private-chat-id', msg_type: 'text',
+      content: JSON.stringify({ text: i === 4 ? 'x'.repeat(2000) : 'Hi Lark\nSecond line' }),
+    });
+    assert.equal(mock.calls[i].options.redirect, 'error');
+    assert.equal(mock.calls[i + 1].options.redirect, 'error');
+    assert.ok(mock.calls[i].options.signal instanceof AbortSignal);
+    assert.equal(mock.calls[i].options.signal, mock.calls[i + 1].options.signal);
+  }
+});
+
+test('MCP initializes statelessly, pings, lists exactly two narrow tools and calls both', async t => {
+  const mock = larkMock();
+  const f = await fixture(t, mock.options);
+  const call = body => f.request('/mcp', 'POST', body, automationHeaders);
+  const init = await call(rpc('initialize', initialized, 'init'));
+  assert.equal(init.status, 200);
+  assert.equal(init.headers.get('mcp-session-id'), null);
+  assert.deepEqual(await init.json(), {
+    jsonrpc: '2.0', id: 'init', result: {
+      protocolVersion: '2025-06-18', capabilities: { tools: { listChanged: false } },
+      serverInfo: { name: 'alliance-lark', version: '1.0.0' },
+    },
+  });
+  assert.deepEqual(await (await call(rpc('ping', undefined, null))).json(), { jsonrpc: '2.0', id: null, result: {} });
+  const list = await (await call(rpc('tools/list'))).json();
+  assert.deepEqual(list.result.tools.map(tool => tool.name), ['lark_status', 'lark_send_message']);
+  const [statusTool, sendTool] = list.result.tools;
+  assert.deepEqual(statusTool.annotations, { readOnlyHint: true });
+  assert.equal(statusTool.inputSchema.additionalProperties, false);
+  assert.deepEqual(sendTool.inputSchema.required, ['message']);
+  assert.equal(sendTool.inputSchema.additionalProperties, false);
+  assert.equal(sendTool.inputSchema.properties.message.maxLength, 2000);
+  assert.deepEqual(sendTool.annotations, { destructiveHint: true, openWorldHint: true, idempotentHint: false, readOnlyHint: false });
+  const status = await (await call(rpc('tools/call', { name: 'lark_status', arguments: {} }))).json();
+  assert.deepEqual(JSON.parse(status.result.content[0].text), statusResult(true));
+  assert.equal(mock.calls.length, 0);
+  const sent = await (await call(rpc('tools/call', { name: 'lark_send_message', arguments: { message: '  MCP message  ' } }, 2))).json();
+  assert.deepEqual(sent, { jsonrpc: '2.0', id: 2, result: { content: [{ type: 'text', text: 'Message sent to Lark.' }] } });
+  assert.deepEqual(JSON.parse(JSON.parse(mock.calls[1].options.body).content), { text: 'MCP message' });
+});
+
+test('MCP JSON-RPC parse, request, method, parameter and notification errors never send messages', async t => {
+  const mock = larkMock();
+  const f = await fixture(t, mock.options);
+  const cases = [
+    [[], -32600], [null, -32600], [{}, -32600], [[rpc('ping')], -32600],
+    [{ ...rpc('ping'), jsonrpc: '1.0' }, -32600], [{ ...rpc('ping'), id: {} }, -32600],
+    [{ ...rpc('ping'), id: true }, -32600], [{ ...rpc('ping'), id: [] }, -32600],
+    [{ ...rpc('ping'), method: 1 }, -32600], [rpc('ping', []), -32602],
+    [rpc('initialize', {}), -32602], [rpc('unknown'), -32601],
+    [rpc('tools/call', { name: 'finance' }), -32602],
+    [rpc('tools/call', { name: 'lark_status', arguments: { message: 'bad' } }), -32602],
+    [rpc('tools/call', { name: 'lark_status', arguments: [] }), -32602],
+    [rpc('tools/call', { name: 'lark_send_message' }), -32602],
+    [rpc('tools/call', { name: 'lark_send_message', arguments: { message: '   ' } }), -32602],
+    [rpc('tools/call', { name: 'lark_send_message', arguments: { message: 42 } }), -32602],
+    [rpc('tools/call', { name: 'lark_send_message', arguments: { message: 'x'.repeat(2001) } }), -32602],
+    [rpc('tools/call', { name: 'lark_send_message', arguments: { message: 'bad', chat_id: 'other' } }), -32602],
+    [{ jsonrpc: '2.0', method: 'tools/call', params: { name: 'lark_send_message', arguments: { message: 'no id' } } }, -32600],
+    [{ jsonrpc: '2.0', method: 'initialize', params: initialized }, -32600],
+    [{ jsonrpc: '2.0', method: 'notifications/cancelled', params: {} }, -32602],
+  ];
+  for (const [body, code] of cases) {
+    const response = await f.request('/mcp', 'POST', body, automationHeaders);
+    assert.equal(response.status, 400, JSON.stringify(body));
+    const error = await response.json();
+    assert.equal(error.jsonrpc, '2.0');
+    assert.equal(error.error.code, code, JSON.stringify(body));
+  }
+  const malformed = await fetch(`${f.base}/mcp`, {
+    method: 'POST', headers: { ...automationHeaders, 'Content-Type': 'application/json' }, body: '{',
+  });
+  assert.equal(malformed.status, 400);
+  assert.deepEqual(await malformed.json(), { jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error.' } });
+  for (const [method, params] of [['notifications/initialized', undefined], ['notifications/cancelled', { requestId: 1, reason: 'cancel' }]]) {
+    const response = await f.request('/mcp', 'POST', { jsonrpc: '2.0', method, ...(params ? { params } : {}) }, automationHeaders);
+    assert.equal(response.status, 202);
+    assert.equal(await response.text(), '');
+  }
+  assert.equal(mock.calls.length, 0);
+});
+
+test('MCP requires bearer before parsing, protects origin, negotiates HTTP and enforces body limits', async t => {
+  const mock = larkMock();
+  const f = await fixture(t, { ...mock.options, publicOrigin: 'https://agency.example.com' });
+  for (const headers of [{}, { Authorization: ['Bearer', TOKEN].join(' ') }, { Authorization: 'Basic ignored' }]) {
+    const response = await fetch(`${f.base}/mcp`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: '{' });
+    assert.equal(response.status, 401);
+  }
+  for (const method of ['GET', 'DELETE']) {
+    const response = await f.request('/mcp', method);
+    assert.equal(response.status, 405);
+    assert.equal(response.headers.get('allow'), 'POST');
+  }
+  const checks = [
+    [{ Origin: 'https://evil.example' }, 403],
+    [{ Origin: 'null' }, 403],
+    [{ 'Content-Type': 'text/plain' }, 415],
+    [{ Accept: 'text/event-stream' }, 406],
+    [{ Accept: 'application/json;q=0, text/event-stream' }, 406],
+    [{ 'MCP-Protocol-Version': '2024-11-05' }, 400],
+    [{ 'MCP-Protocol-Version': '2025-03-26' }, 400],
+    [{ 'MCP-Protocol-Version': '2025-06-18', Origin: 'https://agency.example.com' }, 200],
+    [{ Accept: 'application/json, text/event-stream' }, 200],
+    [{ Accept: '*/*' }, 200],
+  ];
+  for (const [headers, expected] of checks) {
+    const response = await f.request('/mcp', 'POST', rpc('ping'), { ...automationHeaders, ...headers });
+    assert.equal(response.status, expected, JSON.stringify(headers));
+  }
+  assert.equal((await f.request('/mcp', 'POST', rpc('ping', { padding: 'x'.repeat(70_000) }), automationHeaders)).status, 413);
+  const chunked = await new Promise((resolve, reject) => {
+    const request = httpRequest(`${f.base}/mcp`, { method: 'POST', headers: automationHeaders }, response => {
+      response.resume();
+      response.on('end', () => resolve(response.statusCode));
+    });
+    request.on('error', reject);
+    request.write('x'.repeat(40_000));
+    request.end('x'.repeat(40_000));
+  });
+  assert.equal(chunked, 413);
+  assert.equal(mock.calls.length, 0);
+});
+
+test('Lark machine and MCP failures are sanitized and configuration never claims connectivity', async t => {
+  const unconfigured = await fixture(t, { larkAutomationToken: AUTOMATION_TOKEN, larkAppSecret: 'private-app-secret' });
+  const response = await unconfigured.request('/api/automation/lark/messages', 'POST', { message: 'Hello' }, automationHeaders);
+  assert.equal(response.status, 503);
+  assert.deepEqual(await response.json(), { error: 'Lark is not configured.' });
+  const notConfigured = await (await unconfigured.request('/mcp', 'POST',
+    rpc('tools/call', { name: 'lark_send_message', arguments: { message: 'Hello' } }), automationHeaders)).json();
+  assert.deepEqual(notConfigured.result, { content: [{ type: 'text', text: 'Lark is not configured.' }], isError: true });
+  const mock = larkMock();
+  const f = await fixture(t, {
+    ...mock.options, fetchImpl: async () => { throw new Error(`private-app-secret ${AUTOMATION_TOKEN} private-tenant-token`); },
+  });
+  const status = await f.request('/api/automation/lark/status', 'GET', undefined, automationHeaders);
+  assert.deepEqual(await status.json(), statusResult(true));
+  const failure = await f.request('/api/automation/lark/messages', 'POST', { message: 'Hello' }, automationHeaders);
+  assert.equal(failure.status, 502);
+  assert.deepEqual(await failure.json(), { error: 'Unable to send the Lark message.' });
+  const toolFailure = await f.request('/mcp', 'POST',
+    rpc('tools/call', { name: 'lark_send_message', arguments: { message: 'Hello' } }), automationHeaders);
+  assert.equal(toolFailure.status, 200);
+  assert.deepEqual((await toolFailure.json()).result, {
+    content: [{ type: 'text', text: 'Unable to send the Lark message.' }], isError: true,
+  });
+});
+
+test('all Lark sends share the same ten-per-minute IP limit and expire without affecting status', async t => {
+  let time = 1000;
+  const mock = larkMock();
+  const f = await fixture(t, { ...mock.options, now: () => time });
+  await f.login();
+  const senders = [
+    () => f.request('/api/integrations/lark/test', 'POST'),
+    () => f.request('/api/integrations/lark/messages', 'POST', { message: 'UI' }),
+    () => f.request('/api/automation/lark/messages', 'POST', { message: 'API' }, automationHeaders),
+    () => f.request('/mcp', 'POST', rpc('tools/call', { name: 'lark_send_message', arguments: { message: 'MCP' } }), automationHeaders),
+  ];
+  for (let i = 0; i < 10; i++) assert.equal((await senders[i % 4]()).status, 200);
+  assert.equal(mock.calls.length, 20);
+  for (const sender of senders.slice(0, 3)) {
+    const limited = await sender();
+    assert.equal(limited.status, 429);
+    assert.equal(limited.headers.get('retry-after'), '60');
+  }
+  const limitedMcp = await senders[3]();
+  assert.equal((await limitedMcp.json()).result.isError, true);
+  assert.equal(limitedMcp.headers.get('retry-after'), '60');
+  assert.equal(mock.calls.length, 20);
+  assert.equal((await f.request('/api/automation/lark/status', 'GET', undefined, automationHeaders)).status, 200);
+  time += 60_000;
+  assert.equal((await senders[2]()).status, 200);
+  assert.equal(mock.calls.length, 22);
+});
+
+test('public GPT Actions OpenAPI requires trusted HTTPS and exposes only narrow bearer operations, never secrets', async t => {
+  for (const publicOrigin of ['', 'http://localhost:3000']) {
+    const f = await fixture(t, { publicOrigin });
+    const response = await f.request('/api/openapi.json');
+    assert.equal(response.status, 503);
+    assert.match((await response.json()).error, /HTTPS PUBLIC_ORIGIN/);
+  }
+  const mock = larkMock();
+  const f = await fixture(t, { ...mock.options, publicOrigin: 'https://custom.alliance.agency:8443' });
+  const response = await f.request('/api/openapi.json');
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get('content-type'), /application\/json/);
+  const text = await response.text();
+  for (const secret of [TOKEN, AUTOMATION_TOKEN, 'private-app-secret', 'private-app-id', 'private-chat-id']) assert.ok(!text.includes(secret));
+  const schema = JSON.parse(text);
+  assert.equal(schema.openapi, '3.1.0');
+  assert.deepEqual(schema.servers, [{ url: 'https://custom.alliance.agency:8443' }]);
+  assert.deepEqual(Object.keys(schema.paths), ['/api/automation/lark/status', '/api/automation/lark/messages']);
+  assert.deepEqual(schema.components.securitySchemes, { larkBearer: { type: 'http', scheme: 'bearer' } });
+  assert.deepEqual(schema.security, [{ larkBearer: [] }]);
+  const status = schema.paths['/api/automation/lark/status'].get;
+  assert.equal(status.operationId, 'getLarkConnectionStatus');
+  const message = schema.paths['/api/automation/lark/messages'].post;
+  assert.equal(message.operationId, 'sendLarkMessage');
+  assert.equal(message['x-openai-isConsequential'], true);
+  assert.equal(message.requestBody.required, true);
+  assert.equal(message.requestBody.content['application/json'].schema.additionalProperties, false);
+  assert.equal(message.requestBody.content['application/json'].schema.properties.message.maxLength, 2000);
+  assert.equal(status.responses[200].content['application/json'].schema.properties.status.type, 'string');
+  assert.equal(status.responses[200].content['application/json'].schema.properties.capabilities.type, 'array');
+  assert.equal(message.responses[200].content['application/json'].schema.properties.message.type, 'string');
+  assert.equal(mock.calls.length, 0);
 });
