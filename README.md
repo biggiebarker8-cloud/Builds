@@ -25,6 +25,12 @@ The **Agency link** shortcut opens the TikTok URL supplied by the agency owner:
 https://www.tiktok.com/t/ZSg8eb83Q/. It is an external shortcut, not an account
 connection or a verified Backstage destination.
 
+Official **TikTok for Business** (`https://www.tiktok.com/business/en`) and
+**TikTok Ads Manager** (`https://ads.tiktok.com/`) shortcuts are also available
+to both roles. They open externally with your own TikTok sign-in, without account
+linking, ad sync, or campaign automation. Dashboard roles do not restrict external
+TikTok billing or ad-spend permissions: configure those separately within TikTok.
+
 ## Access roles
 
 | Capability | Owner | Manager |
