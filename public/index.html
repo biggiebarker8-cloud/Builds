@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#10151b">
+  <title>The Alliance · Agency workspace</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <section id="login" class="login-shell">
+    <div class="login-card">
+      <div class="brand-mark">A<span>↗</span></div>
+      <p class="eyebrow">THE ALLIANCE / AGENCY OPERATIONS</p>
+      <h1>Your agency.<br>Your next chapter.</h1>
+      <p class="muted">A private, standalone workspace. Use your setup token for the first sign-in, then choose a password in Security.</p>
+      <label>Sign-in method<select id="login-method"><option value="token">Setup / recovery token</option><option value="password">Password</option></select></label>
+      <form id="login-form">
+        <label id="login-role-label" hidden>Role<select name="role"><option value="owner">Owner</option><option value="manager">Manager</option></select></label>
+        <label><span id="login-credential-label">Workspace access token</span><input name="credential" type="password" required autocomplete="current-password" maxlength="4096"></label>
+        <button type="submit">Open workspace <span aria-hidden="true">↗</span></button>
+      </form>
+      <p class="small muted">No TikTok or Lark password is needed.</p>
+    </div>
+  </section>
+  <div id="workspace" class="workspace" hidden>
+    <aside class="sidebar">
+      <a class="brand" href="#overview"><span class="brand-mark mini">A↗</span><span>THE ALLIANCE<small>AGENCY WORKSPACE</small></span></a>
+      <p class="nav-label">WORKSPACE</p>
+      <nav aria-label="Main navigation">
+        <a href="#overview" class="active">◈ <span>Overview</span></a>
+        <a href="#creators">◎ <span>Creator roster</span></a>
+        <a href="#tasks">☷ <span>Operations</span></a>
+        <a href="#connections">⇄ <span>Connections</span></a>
+        <a href="#security">⚿ <span>Security</span></a>
+        <a href="https://www.tiktok.com/t/ZSg8eb83Q/" target="_blank" rel="noopener noreferrer">↗ <span>Agency link</span></a>
+        <a href="https://www.tiktok.com/business/en" target="_blank" rel="noopener noreferrer">↗ <span>TikTok for Business</span></a>
+        <a href="https://ads.tiktok.com/" target="_blank" rel="noopener noreferrer">↗ <span>TikTok Ads Manager</span></a>
+        <a href="https://adsmanager.facebook.com/" target="_blank" rel="noopener noreferrer">↗ <span>Facebook &amp; Instagram ads</span></a>
+        <a href="https://business.facebook.com/" target="_blank" rel="noopener noreferrer">↗ <span>Meta Business Suite</span></a>
+        <a href="#finance" data-owner-only hidden>＄ <span>Payments &amp; charges</span></a>
+        <a href="#settings" data-owner-only hidden>⚙ <span>Agency settings</span></a>
+      </nav>
+      <div class="sidebar-note"><span class="live-dot"></span> Independent by design<p>Your workspace stays separate from Backstage and Lark.</p></div>
+      <button id="logout" class="quiet">Sign out ↗</button>
+    </aside>
+    <div class="main-shell">
+      <header class="topbar"><span>Workspace <span class="muted">/</span> <strong id="page-label">Overview</strong></span><div class="top-actions"><span id="role-badge" class="badge"></span><span class="badge">AU · PRIMARY</span></div></header>
+      <main>
+        <section id="overview" class="page">
+          <div class="page-heading"><div><p class="eyebrow">YOUR AGENCY, AT A GLANCE</p><h1>Make the next move.</h1><p class="muted">The people, priorities, and progress behind your agency.</p></div><button id="overview-add">+ Add creator</button></div>
+          <div class="hero"><div><span class="hero-tag">BUILT FOR WHAT'S NEXT</span><h2>Local roots.<br>Global ambition.</h2><p>Australia is home. The UK is on the horizon.<br>Keep every market moving, without mixing the numbers.</p><a href="#creators" class="hero-link">Manage your roster ↗</a></div><div class="hero-art" aria-hidden="true"><span>AU</span><div class="orbit"></div><span>UK ↗</span></div></div>
+          <div class="section-heading"><h2>Agency snapshot</h2><label class="inline-label">Market<select id="summary-market"><option value="AU">Australia · AUD</option><option value="UK">United Kingdom · GBP (planning)</option></select></label></div>
+          <div class="metrics"><article class="metric"><p>Active creators <span>◎</span></p><strong id="metric-creators">0</strong><small>Active in selected market</small></article><article class="metric"><p>Recorded LIVE hours <span>◷</span></p><strong id="metric-hours">0</strong><small>Manually recorded totals</small></article><article class="metric"><p>Recorded revenue <span>↗</span></p><strong id="metric-revenue">A$0</strong><small>Manual figures · not payout verification</small></article><article class="metric"><p>Open priorities <span>☷</span></p><strong id="metric-tasks">0</strong><small>Tasks in selected market</small></article></div>
+          <div class="overview-grid"><article class="panel"><div class="section-heading"><h2>Next up</h2><a href="#tasks">All tasks ↗</a></div><div id="upcoming"></div></article><article class="panel"><p class="eyebrow">CONNECTION HEALTH</p><h2>Real access. No shortcuts.</h2><div class="connection-line"><span>TikTok Backstage</span><span class="badge neutral">Not connected</span></div><div class="connection-line"><span>Lark</span><span id="lark-overview" class="badge neutral">Not configured</span></div><p class="small muted">No data is automatically synced. TikTok access requires an officially approved integration.</p><a href="#connections">Review connections ↗</a></article></div>
+          <p class="footnote">Only your saved records appear here. No demo metrics, estimated earnings, or simulated connections.</p>
+        </section>
+        <section id="creators" class="page" hidden>
+          <div class="page-heading"><div><p class="eyebrow">PEOPLE FIRST</p><h1>Creator roster</h1><p class="muted">Manage onboarding, ownership, and manually recorded performance.</p></div><div class="button-group"><button id="export" class="secondary">Export CSV</button><button id="add-creator">+ Add creator</button></div></div>
+          <div class="panel"><div class="filters"><label>Search<input id="creator-search" type="search" placeholder="Handle or manager"></label><label>Market<select id="creator-market"><option value="">All markets</option><option value="AU">Australia</option><option value="UK">UK · planning</option></select></label></div><div class="table-scroll"><table><thead><tr><th>Creator</th><th>Market</th><th>Manager</th><th>Status</th><th>LIVE / target hours</th><th>Revenue</th><th>Actions</th></tr></thead><tbody id="creator-rows"></tbody></table></div><p id="creator-empty" class="empty">Your roster starts here. Add your first creator to get moving.</p></div>
+        </section>
+        <section id="tasks" class="page" hidden>
+          <div class="page-heading"><div><p class="eyebrow">TURN PLANS INTO PROGRESS</p><h1>Operations</h1><p class="muted">Track onboarding, creator support, campaigns, and agency priorities.</p></div><button id="add-task">+ New task</button></div>
+          <div class="panel"><div id="task-list"></div></div>
+        </section>
+        <section id="connections" class="page" hidden>
+          <div class="page-heading"><div><p class="eyebrow">OFFICIAL ACCESS ONLY</p><h1>Connections</h1><p class="muted">Standalone first. Connect services only when you are ready.</p></div></div>
+          <p class="callout">TikTok for Business and TikTok Ads Manager open separately using your own TikTok sign-in. These shortcuts do not connect or sync your accounts. Workspace roles do not control TikTok's external advertising, payment, or billing permissions; configure those within TikTok before inviting managers.</p>
+          <article class="panel">
+            <p class="eyebrow">LARK API · MCP · CHATGPT ACTIONS</p>
+            <h2>Connect your tools, with permission</h2>
+            <p>Lark Pro still requires an approved Lark app, bot messaging permissions, and the bot in your chosen chat. The API sends real messages only after that configuration is complete.</p>
+            <form id="lark-message-form" class="settings-form">
+              <label>Message to the configured Lark chat<textarea name="message" rows="3" required maxlength="2000" placeholder="Write a message for your agency chat"></textarea></label>
+              <button type="submit" id="lark-send">Send to Lark</button>
+            </form>
+            <p class="small muted">This sends immediately to the server-configured chat. Do not include passwords, credentials, banking details, or personal information that should not be shared there.</p>
+            <p><strong>MCP:</strong> <code>/mcp</code> exposes Lark status and send-message tools to clients supporting manually configured bearer authentication. No dashboard, creator, or finance access is provided.</p>
+            <p><strong>ChatGPT:</strong> <a href="/api/openapi.json" target="_blank" rel="noopener noreferrer">Open Actions schema ↗</a> for a custom GPT where Actions are supported. Hosting must first have an HTTPS public origin configured. Add the separate automation token privately in the client's authentication settings, never in prompts.</p>
+            <p class="small muted">These tools are not automatically installed or linked to your accounts. Direct ChatGPT MCP connections are not guaranteed: this endpoint does not implement OAuth. No email service or public website is deployed by adding these endpoints.</p>
+          </article>
+          <article class="panel">
+            <p class="eyebrow">LARK ANYCROSS</p>
+            <h2>Connect an AnyCross workflow</h2>
+            <span class="badge neutral">External setup required · not verified</span>
+            <p>Use an AnyCross HTTP action to send a message through this workspace's limited Lark API. This does not install or activate a workflow in your Lark account.</p>
+            <label>Message endpoint (use the deployed HTTPS address)<input id="anycross-endpoint" type="url" readonly></label>
+            <ol>
+              <li>Open your AnyCross workspace and create a workflow with an HTTP request action.</li>
+              <li>Set its method to POST and Content-Type to application/json.</li>
+              <li>Store the separate LARK_AUTOMATION_TOKEN privately in AnyCross's available credential storage. Select the bearer option for HTTP authentication and supply that token.</li>
+              <li>Map the JSON body field <code>message</code> to your workflow's intended text (up to 2,000 characters), then run an explicit test.</li>
+            </ol>
+            <p class="small muted">A successful request sends immediately to the one configured Lark chat. It does not sync the roster or finance records. Check AnyCross availability and HTTP capabilities with your workspace administrator; Lark Pro alone does not guarantee AnyCross access. Treat workflow retries as potential duplicate messages.</p>
+            <a href="https://anycross.larksuite.com/" target="_blank" rel="noopener noreferrer">Open Lark AnyCross ↗</a>
+          </article>
+          <article class="panel">
+            <p class="eyebrow">FACEBOOK &amp; INSTAGRAM ADVERTISING</p>
+            <h2>Official Meta tools</h2>
+            <span class="badge neutral">Not connected · external tools only</span>
+            <p>Use Meta Ads Manager for Facebook and Instagram campaigns, and Meta Business Suite for your business assets. Sign in directly with Meta; this workspace never asks for your Facebook or Instagram password.</p>
+            <div class="button-group"><a href="https://adsmanager.facebook.com/" target="_blank" rel="noopener noreferrer">Open Ads Manager ↗</a><a href="https://business.facebook.com/" target="_blank" rel="noopener noreferrer">Open Business Suite ↗</a></div>
+            <p class="small muted">These are official shortcuts, not installed plugins or API connections. No campaign data, publishing, spending, or billing is synced. Linking a business, Page, Instagram account, or ad account requires authorised access in Meta. A future in-dashboard connector requires an authorised Meta app and appropriate permissions. Set staff advertising and billing permissions in Meta itself; workspace roles do not govern external accounts.</p>
+          </article>
+          <div class="connection-grid"><article class="panel"><div class="integration-icon">♪</div><h2>TikTok Backstage</h2><span class="badge neutral">Not connected</span><p>This dashboard does not access your TikTok account, impersonate Backstage, or install plugins inside it.</p><ol><li>Confirm the integration permissions available to your agency with TikTok.</li><li>Obtain official documentation and approval for your markets.</li><li>Implement and verify the approved integration before enabling sync.</li></ol><p class="callout">Your handle is a workspace label, not proof of account ownership or an account link.</p></article>
+          <article class="panel"><div class="integration-icon lark-icon">↗</div><h2>Lark</h2><span id="lark-status" class="badge neutral">Not configured</span><p>Optional server-side connection using Lark's official app and messaging APIs. No community plugins.</p><ol><li>Create an internal app in your Lark developer console.</li><li>Enable bot messaging permissions, publish the app, and add the bot to the intended chat.</li><li>Configure the app ID, app secret, and chat ID on your server, then restart it.</li></ol><button id="lark-test" class="secondary">Send a real test message</button><p class="small muted">Configured does not mean verified. This sends one message; it does not sync creators or calendars.</p></article></div>
+        </section>
+        <section id="finance" class="page" hidden>
+          <div class="page-heading"><div><p class="eyebrow">OWNER ACCESS ONLY</p><h1>Payments &amp; charges</h1><p class="muted">Private records for payments and administrative charges.</p></div><button id="add-finance">+ Add record</button></div>
+          <p class="callout">Manual ledger only. Saving or marking a record does not send money, charge anyone, verify settlement, or connect a payment provider. Do not enter card or bank details.</p>
+          <div class="panel"><div class="table-scroll"><table><thead><tr><th>Date</th><th>Description</th><th>Type</th><th>Market</th><th>Amount</th><th>Status</th><th>Actions</th></tr></thead><tbody id="finance-rows"></tbody></table></div><p id="finance-empty" class="empty">No payment or administrative-charge records yet.</p></div>
+        </section>
+        <section id="security" class="page" hidden>
+          <div class="page-heading"><div><p class="eyebrow">YOUR ACCESS</p><h1>Set or change password</h1><p class="muted">Update the password for your signed-in role only. Owner and Manager permissions stay separate.</p></div></div>
+          <form id="password-form" class="panel settings-form">
+            <p id="password-status" class="muted"></p>
+            <label>Current password or your role's setup token<input name="currentCredential" type="password" required maxlength="4096" autocomplete="current-password"></label>
+            <label>New password<input name="password" type="password" required minlength="12" maxlength="128" autocomplete="new-password"></label>
+            <label>Confirm new password<input name="confirmation" type="password" required minlength="12" maxlength="128" autocomplete="new-password"></label>
+            <p class="small muted">Use a unique password of 12–128 characters. A password manager can generate and save it. Saving signs out other sessions for your role. Never use your TikTok or Lark password.</p>
+            <button type="submit">Save password</button>
+          </form>
+        </section>
+        <section id="settings" class="page" hidden>
+          <div class="page-heading"><div><p class="eyebrow">OWNER ADMINISTRATION</p><h1>Agency settings</h1><p class="muted">Australia first. Keep future expansion deliberate. Managers cannot change these settings.</p></div></div>
+          <form id="settings-form" class="panel settings-form"><label>Agency name<input name="agencyName" required maxlength="100"></label><label>TikTok handle (label only)<input name="accountHandle" required maxlength="100"></label><label>Australian timezone<select name="auTimezone"><option>Australia/Sydney</option><option>Australia/Melbourne</option><option>Australia/Brisbane</option><option>Australia/Perth</option><option>Australia/Adelaide</option><option>Australia/Darwin</option><option>Australia/Hobart</option></select></label><label class="checkbox-label"><input type="checkbox" name="ukEnabled"> Enable UK planning workspace</label><p class="small muted">UK planning is not TikTok approval. AUD and GBP are kept separate; no currency conversion is applied.</p><button type="submit">Save settings</button></form>
+        </section>
+      </main>
+      <footer><span id="agency-footer">The Alliance</span><span id="local-time"></span></footer>
+    </div>
+  </div>
+  <dialog id="creator-dialog" aria-labelledby="creator-dialog-title"><form id="creator-form"><div class="section-heading"><h2 id="creator-dialog-title">Add creator</h2><button type="button" class="quiet close-dialog" aria-label="Close">✕</button></div><input type="hidden" name="id"><label>TikTok handle<input name="handle" required maxlength="100" placeholder="@creator"></label><div class="form-grid"><label>Market<select name="market"><option value="AU">Australia · AUD</option><option value="UK">UK · planning · GBP</option></select></label><label>Status<select name="status"><option value="prospect">Prospect</option><option value="onboarding">Onboarding</option><option value="active">Active</option><option value="paused">Paused</option></select></label></div><label>Manager<input name="manager" maxlength="100"></label><div class="form-grid"><label>Recorded LIVE hours<input name="liveHours" type="number" min="0" max="1000000" step="0.01" value="0" required></label><label>Target hours<input name="targetHours" type="number" min="0" max="1000000" step="0.01" value="0" required></label></div><label>Recorded revenue (market currency)<input name="revenue" type="number" min="0" max="1000000000" step="0.01" value="0" required></label><p class="small muted">Manual cumulative records, not verified TikTok earnings or a dated reporting period.</p><button type="submit">Save creator</button></form></dialog>
+  <dialog id="task-dialog" aria-labelledby="task-dialog-title"><form id="task-form"><div class="section-heading"><h2 id="task-dialog-title">New task</h2><button type="button" class="quiet close-dialog" aria-label="Close">✕</button></div><label>Task<input name="title" required maxlength="200" placeholder="What needs to happen next?"></label><label>Market<select name="market"><option value="AU">Australia</option><option value="UK">UK · planning</option></select></label><label>Due date (optional)<input name="dueDate" type="date"></label><button type="submit">Create task</button></form></dialog>
+  <dialog id="finance-dialog" aria-labelledby="finance-dialog-title">
+    <form id="finance-form">
+      <div class="section-heading"><h2 id="finance-dialog-title">Add financial record</h2><button type="button" class="quiet close-dialog" aria-label="Close">✕</button></div>
+      <input type="hidden" name="id">
+      <label>Type<select name="type"><option value="payment">Payment</option><option value="administrative_charge">Administrative charge</option></select></label>
+      <label>Description<input name="description" required maxlength="200" placeholder="Purpose or reference — no banking details"></label>
+      <div class="form-grid"><label>Market / currency<select name="market"><option value="AU">Australia · AUD</option><option value="UK">UK · GBP</option></select></label><label>Amount<input name="amount" type="number" min="0.01" max="1000000000" step="0.01" required></label></div>
+      <label>Record date<input name="date" type="date" required></label>
+      <label>Status<select name="status"><option value="pending">Pending</option><option value="recorded">Recorded manually</option><option value="void">Void</option></select></label>
+      <p class="small muted">Recordkeeping only. No funds are moved or charged.</p>
+      <button type="submit">Save record</button>
+    </form>
+  </dialog>
+  <div id="notification" role="status" aria-live="polite" hidden></div>
+</body>
+</html>
