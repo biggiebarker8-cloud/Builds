@@ -136,12 +136,16 @@ test('creator CRUD, field validation, task CRUD, and settings', async t => {
     [], null, {}, { ...creator, market: 'US' }, { ...creator, handle: '' },
     { ...creator, status: 'approved' },     { ...creator, revenue: -1 }, { ...creator, revenue: 1_000_000_001 },
     { ...creator, liveHours: '2' }, { ...creator, targetHours: 1_000_001 },
+    { ...creator, liveHours: 0.001 }, { ...creator, targetHours: 1.111 }, { ...creator, revenue: 1.001 },
     { ...creator, id: 'injected' }, { ...creator, manager: 'x'.repeat(101) },
   ]) assert.equal((await f.request('/api/creators', 'POST', body)).status, 400);
   const created = await f.request('/api/creators', 'POST', creator);
   assert.equal(created.status, 201);
   const c = await created.json();
   assert.match(c.id, /^[a-f0-9-]{36}$/);
+  assert.equal((await f.request(`/api/creators/${c.id}`, 'PATCH', {
+    liveHours: 0.29, targetHours: 1_000_000, revenue: 1_000_000_000,
+  })).status, 200);
   const updated = await f.request(`/api/creators/${c.id}`, 'PATCH', { status: 'active', liveHours: 3.5 });
   assert.equal(updated.status, 200);
   assert.equal((await updated.json()).liveHours, 3.5);

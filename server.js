@@ -28,7 +28,8 @@ const invalid = (message = 'Invalid request.') => { throw new HttpError(400, mes
 const string = (value, max, empty = false) =>
   typeof value === 'string' && value.length <= max && (empty || value.trim().length > 0) &&
   !/[\u0000-\u001f\u007f]/u.test(value);
-const number = (value, max) => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= max;
+const number = (value, max) => typeof value === 'number' && Number.isFinite(value) &&
+  value >= 0 && value <= max && Number(value.toFixed(2)) === value;
 const date = value => value === '' || (
   typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/u.test(value) &&
   !Number.isNaN(Date.parse(`${value}T00:00:00Z`)) &&
@@ -210,7 +211,7 @@ export function createApp({
         const origin = req.headers.origin;
         const protocol = req.socket.encrypted ? 'https' : 'http';
         const allowedOrigins = trustedOrigin ? [trustedOrigin] :
-          ['127.0.0.1', 'localhost', '[::1]'].map(host => `${protocol}://${host}:${req.socket.localPort}`);
+          ['127.0.0.1', 'localhost', '[::1]'].map(host => new URL(`${protocol}://${host}:${req.socket.localPort}`).origin);
         if (origin !== undefined && !allowedOrigins.includes(origin)) throw new HttpError(403, 'Origin not allowed.');
         if (req.headers['content-length'] && Number(req.headers['content-length']) > MAX_BODY) {
           throw new HttpError(413, 'Request body too large.');
@@ -339,7 +340,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     });
     for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => server.close());
   } catch {
-    console.error('Unable to start server. Set AGENCY_ADMIN_TOKEN (32–4096 characters) and check database/port configuration.');
+    console.error('Unable to start server. Set AGENCY_ADMIN_TOKEN (32–4096 characters) and check PUBLIC_ORIGIN, database, and port configuration.');
     process.exitCode = 1;
   }
 }
