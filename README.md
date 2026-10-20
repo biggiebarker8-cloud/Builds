@@ -31,6 +31,15 @@ to both roles. They open externally with your own TikTok sign-in, without accoun
 linking, ad sync, or campaign automation. Dashboard roles do not restrict external
 TikTok billing or ad-spend permissions: configure those separately within TikTok.
 
+For **Facebook and Instagram advertising**, the navigation and Connections page
+also link to official **Meta Ads Manager** (`https://adsmanager.facebook.com/`)
+and **Meta Business Suite** (`https://business.facebook.com/`). These open
+externally for both roles and are explicitly not connected integrations or
+installed plugins. They do not sync campaigns, publish ads, or process ad payments.
+Use Meta's own sign-in and business asset/advertising permissions, including
+restrictions on spending and billing for managers. Any future in-dashboard
+advertising connector requires an authorised Meta app and appropriate permissions.
+
 ## Access roles
 
 | Capability | Owner | Manager |
@@ -45,8 +54,9 @@ TikTok billing or ad-spend permissions: configure those separately within TikTok
 The existing `AGENCY_ADMIN_TOKEN` now signs in as **Owner**; it retains full
 access. To enable **Manager**, set `AGENCY_MANAGER_TOKEN` to a different
 randomly generated token of at least 32 characters and restart. If it is not
-set, Manager login is disabled. Each role uses the same sign-in form: the server
-determines the role from the credential, not from a role selection in the browser.
+set, Manager login is disabled. Each role uses the same sign-in form: token login
+derives the role from the token; password login verifies the selected role's
+stored password. Selecting a role alone never grants access.
 Never give the owner token to managers. Rotate a token and restart to revoke
 its access; a restart clears all sessions.
 
