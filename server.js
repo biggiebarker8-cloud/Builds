@@ -1,6 +1,7 @@
 import http from 'node:http';
 import { DatabaseSync } from 'node:sqlite';
-import { randomBytes, randomUUID, timingSafeEqual, createHash } from 'node:crypto';
+import { randomBytes, randomUUID, timingSafeEqual, createHash, scrypt } from 'node:crypto';
+import { promisify } from 'node:util';
 import { chmodSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,6 +9,9 @@ import { fileURLToPath } from 'node:url';
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const MAX_BODY = 64 * 1024;
 const SESSION_AGE = 8 * 60 * 60 * 1000;
+const derivePassword = promisify(scrypt);
+const SCRYPT_OPTIONS = { N: 32768, r: 8, p: 1, maxmem: 64 * 1024 * 1024 };
+const passwordRule = value => typeof value === 'string' && value.length >= 12 && value.length <= 128;
 const TIMEZONES = ['Australia/Sydney', 'Australia/Melbourne', 'Australia/Brisbane', 'Australia/Perth', 'Australia/Adelaide', 'Australia/Darwin', 'Australia/Hobart'];
 const MARKETS = ['AU', 'UK'];
 const STATUSES = ['prospect', 'onboarding', 'active', 'paused'];
@@ -180,10 +184,49 @@ export function createApp({
       date TEXT NOT NULL CHECK(length(date) = 10 AND date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
       status TEXT NOT NULL CHECK(status IN ('pending','recorded','void'))
     ) STRICT;
+    CREATE TABLE IF NOT EXISTS credentials (
+      role TEXT PRIMARY KEY NOT NULL CHECK(role IN ('owner','manager')),
+      salt TEXT NOT NULL CHECK(length(salt) = 64),
+      hash TEXT NOT NULL CHECK(length(hash) = 128)
+    ) STRICT;
     INSERT OR IGNORE INTO settings VALUES (1, 'The Alliance', 'sarcasm_the_alliance', 'Australia/Sydney', 0);
   `);
   const sessions = new Map();
   const attempts = new Map();
+  const passwordAttempts = new Map();
+  const updatingRoles = new Set();
+  let passwordOperations = 0;
+  const getCredential = db.prepare('SELECT salt, hash FROM credentials WHERE role=?');
+  const saveCredential = db.prepare(`INSERT INTO credentials (role, salt, hash) VALUES (?, ?, ?)
+    ON CONFLICT(role) DO UPDATE SET salt=excluded.salt, hash=excluded.hash`);
+  const credentialVersion = role => getCredential.get(role)?.hash;
+  const tokenMatches = (role, value) => {
+    const expected = role === 'owner' ? expectedTokenHash : managerTokenHash;
+    return Boolean(expected && timingSafeEqual(createHash('sha256').update(value).digest(), expected));
+  };
+  const passwordMatches = async (value, credential) => {
+    if (!credential) return false;
+    const hash = await derivePassword(value, Buffer.from(credential.salt, 'hex'), 64, SCRYPT_OPTIONS);
+    return timingSafeEqual(hash, Buffer.from(credential.hash, 'hex'));
+  };
+  const withPasswordCapacity = async operation => {
+    if (passwordOperations >= 4) throw new HttpError(503, 'Password service busy. Try again later.');
+    passwordOperations += 1;
+    try { return await operation(); }
+    finally { passwordOperations -= 1; }
+  };
+  const rateLimit = (req, res, map, message) => {
+    const timestamp = now();
+    for (const [key, attempt] of map) if (attempt.until <= timestamp) map.delete(key);
+    const ip = req.socket.remoteAddress;
+    const attempt = map.get(ip) || { count: 0, until: timestamp + 15 * 60 * 1000 };
+    if (attempt.count >= 10 || (!map.has(ip) && map.size >= 10_000)) {
+      res.setHeader('Retry-After', '900');
+      throw new HttpError(429, message);
+    }
+    attempt.count += 1;
+    map.set(ip, attempt);
+  };
   const larkConfigured = Boolean(larkAppId && larkAppSecret && larkChatId);
   const getSettings = () => {
     const { id, ...settings } = db.prepare('SELECT * FROM settings WHERE id = 1').get();
@@ -202,6 +245,23 @@ export function createApp({
   };
   const cookie = (req, value, age) =>
     `agency_session=${value}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${age}${req.socket.encrypted || trustedOrigin?.startsWith('https:') ? '; Secure' : ''}`;
+  const requireSession = id => {
+    const session = sessions.get(id);
+    if (!session || session.expiresAt <= now()) {
+      sessions.delete(id);
+      throw new HttpError(401, 'Authentication required.');
+    }
+    return session;
+  };
+  const mintSession = (req, res, role) => {
+    const timestamp = now();
+    for (const [id, session] of sessions) if (session.expiresAt <= timestamp) sessions.delete(id);
+    if (sessions.size >= 10_000) throw new HttpError(503, 'Session capacity reached.');
+    sessions.delete(sessionId(req));
+    const id = randomBytes(32).toString('hex');
+    sessions.set(id, { expiresAt: timestamp + SESSION_AGE, role });
+    res.setHeader('Set-Cookie', cookie(req, id, SESSION_AGE / 1000));
+  };
   async function larkTest() {
     if (!larkConfigured) throw new HttpError(503, 'Lark is not configured.');
     try {
@@ -259,45 +319,66 @@ export function createApp({
         return;
       }
       if (path === '/api/login' && method === 'POST') {
-        const timestamp = now();
-        for (const [key, attempt] of attempts) if (attempt.until <= timestamp) attempts.delete(key);
-        const ip = req.socket.remoteAddress;
-        const attempt = attempts.get(ip) || { count: 0, until: timestamp + 15 * 60 * 1000 };
-        if (attempt.count >= 10 || (!attempts.has(ip) && attempts.size >= 10_000)) {
-          res.setHeader('Retry-After', '900');
-          throw new HttpError(429, 'Too many login attempts. Try again later.');
+        rateLimit(req, res, attempts, 'Too many login attempts. Try again later.');
+        const body = await readJson(req);
+        let role;
+        if (body && Object.hasOwn(body, 'token')) {
+          validate(body, { token: v => typeof v === 'string' && v.length <= 4096 }, ['token']);
+          role = tokenMatches('owner', body.token) ? 'owner' :
+            tokenMatches('manager', body.token) ? 'manager' : undefined;
+        } else {
+          validate(body, { role: v => ['owner', 'manager'].includes(v), password: passwordRule }, ['role', 'password']);
+          const priorId = sessionId(req);
+          const priorSession = sessions.get(priorId);
+          const credential = getCredential.get(body.role);
+          const matches = await withPasswordCapacity(() => passwordMatches(body.password, credential));
+          if (priorSession) requireSession(priorId);
+          // A password rotated while scrypt ran must not create a new session.
+          if (matches && credentialVersion(body.role) === credential.hash &&
+              (body.role === 'owner' || managerTokenHash)) role = body.role;
         }
-        attempt.count += 1;
-        attempts.set(ip, attempt);
-        const body = validate(await readJson(req), { token: v => typeof v === 'string' && v.length <= 4096 }, ['token']);
-        const tokenHash = createHash('sha256').update(body.token).digest();
-        const ownerMatches = timingSafeEqual(tokenHash, expectedTokenHash);
-        const managerMatches = managerTokenHash && timingSafeEqual(tokenHash, managerTokenHash);
-        if (!ownerMatches && !managerMatches) {
-          throw new HttpError(401, 'Invalid credentials.');
-        }
-        const role = ownerMatches ? 'owner' : 'manager';
-        for (const [id, session] of sessions) if (session.expiresAt <= timestamp) sessions.delete(id);
-        if (sessions.size >= 10_000) throw new HttpError(503, 'Session capacity reached.');
-        sessions.delete(sessionId(req));
-        const id = randomBytes(32).toString('hex');
-        sessions.set(id, { expiresAt: timestamp + SESSION_AGE, role });
-        res.setHeader('Set-Cookie', cookie(req, id, SESSION_AGE / 1000));
+        if (!role) throw new HttpError(401, 'Invalid credentials.');
+        mintSession(req, res, role);
         send(res, 200, { authenticated: true, role });
         return;
       }
       const id = sessionId(req);
-      if (!id || !sessions.has(id) || sessions.get(id).expiresAt <= now()) {
-        if (id) sessions.delete(id);
-        throw new HttpError(401, 'Authentication required.');
-      }
-      const { role } = sessions.get(id);
+      const { role } = requireSession(id);
       if (role !== 'owner' && (path.startsWith('/api/finance') ||
           (path === '/api/settings' && method === 'PATCH'))) {
         throw new HttpError(403, 'Owner access required.');
       }
       if (path === '/api/session' && method === 'GET') {
         send(res, 200, { authenticated: true, role });
+      } else if (path === '/api/security' && method === 'GET') {
+        send(res, 200, { role, hasPassword: Boolean(getCredential.get(role)) });
+      } else if (path === '/api/security/password' && method === 'PUT') {
+        rateLimit(req, res, passwordAttempts, 'Too many password update attempts. Try again later.');
+        const body = validate(await readJson(req), {
+          currentCredential: v => typeof v === 'string' && v.length <= 4096,
+          password: passwordRule,
+        }, ['currentCredential', 'password']);
+        if (updatingRoles.has(role)) throw new HttpError(409, 'Password update already in progress.');
+        updatingRoles.add(role);
+        try {
+          await withPasswordCapacity(async () => {
+            const credential = getCredential.get(role);
+            const verified = tokenMatches(role, body.currentCredential) ||
+              (body.currentCredential.length <= 128 && await passwordMatches(body.currentCredential, credential));
+            requireSession(id);
+            if (!verified) throw new HttpError(403, 'Invalid current credential.');
+            const salt = randomBytes(32);
+            const hash = await derivePassword(body.password, salt, 64, SCRYPT_OPTIONS);
+            requireSession(id);
+            if (credentialVersion(role) !== credential?.hash) throw new HttpError(409, 'Password changed. Try again.');
+            saveCredential.run(role, salt.toString('hex'), hash.toString('hex'));
+            for (const [key, session] of sessions) if (session.role === role) sessions.delete(key);
+            mintSession(req, res, role);
+          });
+        } finally {
+          updatingRoles.delete(role);
+        }
+        send(res, 200, { message: 'Password saved. Other sessions for your role were signed out.' });
       } else if (path === '/api/logout' && method === 'POST') {
         sessions.delete(id);
         res.setHeader('Set-Cookie', cookie(req, '', 0));
@@ -371,7 +452,7 @@ export function createApp({
   server.requestTimeout = 15_000;
   server.headersTimeout = 10_000;
   server.keepAliveTimeout = 5_000;
-  server.on('close', () => { sessions.clear(); attempts.clear(); db.close(); });
+  server.on('close', () => { sessions.clear(); attempts.clear(); passwordAttempts.clear(); db.close(); });
   return server;
 }
 

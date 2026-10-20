@@ -50,6 +50,30 @@ determines the role from the credential, not from a role selection in the browse
 Never give the owner token to managers. Rotate a token and restart to revoke
 its access; a restart clears all sessions.
 
+### Set your password after startup
+
+1. Sign in using **Setup / recovery token** with your role's private server token.
+2. Open **Security**, enter that token again, and choose and confirm a unique
+   password of 12–128 characters. No default or public setup password is supplied.
+3. Save it in your password manager (such as your iPhone's Passwords app).
+4. Next time, choose **Password**, select your role, and enter your password.
+
+Security changes affect only the signed-in role. Updating a password signs out
+other sessions for that role while keeping the current browser signed in.
+Passwords are salted and hashed on the server, never stored as plaintext or
+returned by the API. The password hashes persist with the SQLite database, so
+hosting must provide private persistent storage.
+
+This initial system still shares credentials per role, not per staff member.
+Manager password sign-in requires `AGENCY_MANAGER_TOKEN` to remain configured.
+Unsetting it and restarting disables manager access, including saved passwords.
+Your private server token remains a recovery credential even after setting a
+password. To revoke a compromised token, rotate it in the server's secret
+environment and restart; separately change a compromised password in Security.
+Keep the owner token private and never use a TikTok or Lark password here.
+There is no email delivery or email password-reset service, and passwords are
+never emailed. Use HTTPS before setting passwords on a hosted deployment.
+
 Managers can still record creator **performance revenue**, which is separate
 from payments and administrative charges. They can read the agency settings
 needed for normal operations but cannot change them. Permissions are checked

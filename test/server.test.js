@@ -1,7 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
+import { scrypt as scryptCallback } from 'node:crypto';
+import { promisify } from 'node:util';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { request as httpRequest } from 'node:http';
@@ -20,8 +22,8 @@ async function fixture(t, options = {}) {
   let server;
   let base;
   let cookie = '';
-  async function start() {
-    server = createApp({ dbPath, adminToken: TOKEN, managerToken: undefined, publicOrigin: '', larkAppId: '', larkAppSecret: '', larkChatId: '', ...options });
+  async function start(overrides = {}) {
+    server = createApp({ dbPath, adminToken: TOKEN, managerToken: undefined, publicOrigin: '', larkAppId: '', larkAppSecret: '', larkChatId: '', ...options, ...overrides });
     server.listen(0, '127.0.0.1');
     await once(server, 'listening');
     base = `http://127.0.0.1:${server.address().port}`;
@@ -38,12 +40,16 @@ async function fixture(t, options = {}) {
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
   async function login(token = TOKEN) {
-    const response = await request('/api/login', 'POST', { token });
+    const response = await request('/api/login', 'POST', typeof token === 'string' ? { token } : token);
     assert.equal(response.status, 200);
     cookie = response.headers.get('set-cookie').split(';')[0];
     return response;
   }
-  return { request, login, stop, start, dbPath, get base() { return base; } };
+  return {
+    request, login, stop, start, dbPath, get base() { return base; },
+    get cookie() { return cookie; },
+    setCookie(response) { cookie = response.headers.get('set-cookie').split(';')[0]; },
+  };
 }
 
 test('startup requires a strong administrator token', () => {
@@ -440,6 +446,234 @@ test('manager sessions expire, logout invalidates them, and restart clears both 
   assert.equal((await f.request('/api/session')).status, 401);
   assert.equal((await f.request('/api/session', 'GET', undefined, { Cookie: renewedOwnerCookie })).status, 401);
   assert.deepEqual(await (await f.login(MANAGER_TOKEN)).json(), { authenticated: true, role: 'manager' });
+});
+
+const PASSWORD = '  password with spaces  ';
+const NEXT_PASSWORD = 'next-password-for-tests';
+const savePassword = (f, currentCredential, password = PASSWORD, headers) =>
+  f.request('/api/security/password', 'PUT', { currentCredential, password }, headers);
+
+test('password setup, salted strong hashes, persistence, rotation, and token recovery', async t => {
+  const f = await fixture(t);
+  assert.equal((await f.request('/api/security')).status, 401);
+  assert.equal((await savePassword(f, TOKEN)).status, 401);
+  await f.login();
+  assert.deepEqual(await (await f.request('/api/security')).json(), { role: 'owner', hasPassword: false });
+  const saved = await savePassword(f, TOKEN);
+  assert.equal(saved.status, 200);
+  assert.deepEqual(await saved.json(), { message: 'Password saved. Other sessions for your role were signed out.' });
+  f.setCookie(saved);
+  assert.deepEqual(await (await f.request('/api/security')).json(), { role: 'owner', hasPassword: true });
+  const disk = new DatabaseSync(f.dbPath);
+  const first = disk.prepare('SELECT * FROM credentials').get();
+  assert.equal(first.role, 'owner');
+  assert.equal(first.salt.length, 64);
+  assert.equal(first.hash.length, 128);
+  const derived = await promisify(scryptCallback)(PASSWORD, Buffer.from(first.salt, 'hex'), 64,
+    { N: 32768, r: 8, p: 1, maxmem: 64 * 1024 * 1024 });
+  assert.equal(derived.toString('hex'), first.hash);
+  for (const path of ['/api/state', '/api/security']) {
+    const text = await (await f.request(path)).text();
+    for (const secret of [PASSWORD, TOKEN, first.salt, first.hash]) assert.ok(!text.includes(secret));
+  }
+  disk.close();
+  await f.stop();
+  assert.ok(!readFileSync(f.dbPath).includes(Buffer.from(PASSWORD)));
+  await f.start();
+  assert.deepEqual(await (await f.login({ role: 'owner', password: PASSWORD })).json(), { authenticated: true, role: 'owner' });
+  assert.equal((await f.request('/api/login', 'POST', { role: 'owner', password: PASSWORD.trim() })).status, 401);
+  assert.equal((await f.request('/api/login', 'POST', { role: 'manager', password: PASSWORD })).status, 401);
+  const rotated = await savePassword(f, PASSWORD, NEXT_PASSWORD);
+  assert.equal(rotated.status, 200);
+  f.setCookie(rotated);
+  const secondDisk = new DatabaseSync(f.dbPath);
+  const second = secondDisk.prepare('SELECT * FROM credentials').get();
+  assert.notEqual(second.salt, first.salt);
+  assert.notEqual(second.hash, first.hash);
+  secondDisk.close();
+  const rejected = await f.request('/api/login', 'POST', { role: 'owner', password: PASSWORD });
+  assert.equal(rejected.status, 401);
+  assert.deepEqual(await rejected.json(), { error: 'Invalid credentials.' });
+  await f.login({ role: 'owner', password: NEXT_PASSWORD });
+  await f.login();
+  assert.equal((await savePassword(f, TOKEN)).status, 200);
+});
+
+test('password endpoints reject extra fields, invalid lengths, and credentials for another role', async t => {
+  let timestamp = Date.now();
+  const f = await fixture(t, { managerToken: MANAGER_TOKEN, now: () => timestamp });
+  await f.login(MANAGER_TOKEN);
+  for (const body of [
+    null, [], {}, { password: PASSWORD }, { currentCredential: MANAGER_TOKEN },
+    { currentCredential: MANAGER_TOKEN, password: PASSWORD, role: 'owner' },
+    { currentCredential: MANAGER_TOKEN, password: PASSWORD, extra: true },
+    { currentCredential: MANAGER_TOKEN, password: 123 },
+    { currentCredential: MANAGER_TOKEN, password: 'a'.repeat(11) },
+    { currentCredential: MANAGER_TOKEN, password: 'a'.repeat(129) },
+  ]) assert.equal((await f.request('/api/security/password', 'PUT', body)).status, 400);
+  timestamp += 15 * 60 * 1000;
+  for (const credential of [TOKEN, 'wrong-own-password']) {
+    const response = await savePassword(f, credential);
+    assert.equal(response.status, 403);
+    assert.deepEqual(await response.json(), { error: 'Invalid current credential.' });
+  }
+  const minimum = await savePassword(f, MANAGER_TOKEN, 'a'.repeat(12));
+  assert.equal(minimum.status, 200);
+  f.setCookie(minimum);
+  const maximum = await savePassword(f, 'a'.repeat(12), 'b'.repeat(128));
+  assert.equal(maximum.status, 200);
+  f.setCookie(maximum);
+  assert.equal((await f.request('/api/settings', 'PATCH', { agencyName: 'forbidden' })).status, 403);
+  assert.equal((await f.request('/api/finance')).status, 403);
+  const disk = new DatabaseSync(f.dbPath);
+  assert.deepEqual(disk.prepare('SELECT role FROM credentials').all().map(row => row.role), ['manager']);
+  disk.close();
+  for (const body of [
+    { role: 'owner', password: 'b'.repeat(128), token: TOKEN },
+    { role: 'manager', password: 'b'.repeat(128), extra: true },
+    { role: 'admin', password: PASSWORD }, { password: PASSWORD },
+    { role: 'manager', password: 'a'.repeat(11) }, { role: 'manager', password: 'a'.repeat(129) },
+  ]) assert.equal((await f.request('/api/login', 'POST', body)).status, 400);
+  await f.login({ role: 'manager', password: 'b'.repeat(128) });
+  assert.equal((await f.request('/api/login', 'POST', { role: 'owner', password: 'b'.repeat(128) })).status, 401);
+});
+
+test('password update revokes every own-role session but preserves the other role', async t => {
+  const f = await fixture(t, { managerToken: MANAGER_TOKEN });
+  const loginCookie = async token => {
+    const response = await f.request('/api/login', 'POST', { token }, { Cookie: '' });
+    assert.equal(response.status, 200);
+    return response.headers.get('set-cookie').split(';')[0];
+  };
+  const owners = [await loginCookie(TOKEN), await loginCookie(TOKEN)];
+  const managers = [await loginCookie(MANAGER_TOKEN), await loginCookie(MANAGER_TOKEN)];
+  const savedOwner = await savePassword(f, TOKEN, PASSWORD, { Cookie: owners[0] });
+  assert.equal(savedOwner.status, 200);
+  f.setCookie(savedOwner);
+  const currentOwner = f.cookie;
+  for (const Cookie of owners) assert.equal((await f.request('/api/session', 'GET', undefined, { Cookie })).status, 401);
+  for (const Cookie of managers) assert.equal((await f.request('/api/session', 'GET', undefined, { Cookie })).status, 200);
+  const savedManager = await savePassword(f, MANAGER_TOKEN, NEXT_PASSWORD, { Cookie: managers[0] });
+  assert.equal(savedManager.status, 200);
+  f.setCookie(savedManager);
+  for (const Cookie of managers) assert.equal((await f.request('/api/session', 'GET', undefined, { Cookie })).status, 401);
+  assert.equal((await f.request('/api/session', 'GET', undefined, { Cookie: currentOwner })).status, 200);
+  assert.deepEqual(await (await f.request('/api/security')).json(), { role: 'manager', hasPassword: true });
+  await f.stop();
+  await f.start({ managerToken: undefined });
+  assert.equal((await f.request('/api/login', 'POST', { role: 'manager', password: NEXT_PASSWORD })).status, 401);
+  assert.equal((await f.request('/api/login', 'POST', { token: MANAGER_TOKEN })).status, 401);
+  await f.login({ role: 'owner', password: PASSWORD });
+});
+
+test('password attempts have an independent expiring rate limit shared with password logins', async t => {
+  let timestamp = Date.now();
+  const f = await fixture(t, { now: () => timestamp });
+  await f.login();
+  const saved = await savePassword(f, TOKEN);
+  assert.equal(saved.status, 200);
+  f.setCookie(saved);
+  for (let i = 0; i < 9; i++) assert.equal((await savePassword(f, 'wrong')).status, 403);
+  const limited = await savePassword(f, TOKEN);
+  assert.equal(limited.status, 429);
+  assert.equal(limited.headers.get('retry-after'), '900');
+  for (let i = 0; i < 9; i++) {
+    assert.equal((await f.request('/api/login', 'POST', { role: 'owner', password: NEXT_PASSWORD })).status, 401);
+  }
+  assert.equal((await f.request('/api/login', 'POST', { token: TOKEN })).status, 429);
+  timestamp += 15 * 60 * 1000;
+  await f.login({ role: 'owner', password: PASSWORD });
+  assert.equal((await savePassword(f, PASSWORD)).status, 200);
+});
+
+test('overlapping password work is bounded and same-role updates conflict', async t => {
+  const f = await fixture(t);
+  await f.login();
+  const saved = await savePassword(f, TOKEN);
+  assert.equal(saved.status, 200);
+  f.setCookie(saved);
+  const updates = await Promise.all([
+    savePassword(f, PASSWORD, NEXT_PASSWORD),
+    savePassword(f, PASSWORD, 'competing-password-value'),
+  ]);
+  assert.deepEqual(updates.map(response => response.status).sort(), [200, 409]);
+  const winner = updates.find(response => response.status === 200);
+  f.setCookie(winner);
+  const results = await Promise.all(Array.from({ length: 8 }, () =>
+    f.request('/api/login', 'POST', { role: 'owner', password: PASSWORD }, { Cookie: '' })));
+  assert.ok(results.some(response => response.status === 503));
+  assert.ok(results.some(response => response.status === 401));
+  for (const response of results) {
+    assert.ok([401, 503].includes(response.status));
+    assert.equal(response.headers.has('set-cookie'), false);
+    const text = await response.text();
+    for (const secret of [PASSWORD, TOKEN, NEXT_PASSWORD]) assert.ok(!text.includes(secret));
+  }
+});
+
+test('in-flight password updates cannot outlive logout or session expiration', async t => {
+  for (const expire of [false, true]) {
+    let timestamp = Date.now();
+    let clockRead;
+    const f = await fixture(t, { now: () => { clockRead?.(); return timestamp; } });
+    await f.login();
+    const Cookie = f.cookie;
+    let reads = 0;
+    const started = new Promise(resolve => {
+      clockRead = () => { if (++reads === 2) resolve(); };
+    });
+    const pending = savePassword(f, TOKEN);
+    await started;
+    clockRead = undefined;
+    if (expire) timestamp += 8 * 60 * 60 * 1000;
+    else assert.equal((await f.request('/api/logout', 'POST', undefined, { Cookie })).status, 200);
+    const response = await pending;
+    assert.equal(response.status, 401);
+    assert.equal(response.headers.has('set-cookie'), false);
+    const disk = new DatabaseSync(f.dbPath);
+    assert.equal(disk.prepare('SELECT count(*) AS count FROM credentials').get().count, 0);
+    disk.close();
+  }
+});
+
+test('an old-password login overlapping rotation cannot retain access after rotation', async t => {
+  let onClock;
+  const f = await fixture(t, { now: () => { onClock?.(); return Date.now(); } });
+  await f.login();
+  const setup = await savePassword(f, TOKEN);
+  assert.equal(setup.status, 200);
+  f.setCookie(setup);
+  let reads = 0;
+  const started = new Promise(resolve => {
+    onClock = () => { if (++reads === 3) resolve(); };
+  });
+  const rotation = savePassword(f, TOKEN, NEXT_PASSWORD);
+  await started;
+  onClock = undefined;
+  const login = f.request('/api/login', 'POST', { role: 'owner', password: PASSWORD }, { Cookie: '' });
+  const [updated, attempted] = await Promise.all([rotation, login]);
+  assert.equal(updated.status, 200);
+  assert.ok([200, 401].includes(attempted.status));
+  if (attempted.status === 200) {
+    const Cookie = attempted.headers.get('set-cookie').split(';')[0];
+    assert.equal((await f.request('/api/session', 'GET', undefined, { Cookie })).status, 401);
+  } else assert.equal(attempted.headers.has('set-cookie'), false);
+  await f.login({ role: 'owner', password: NEXT_PASSWORD });
+});
+
+test('password reauthentication never accepts the other role password', async t => {
+  const f = await fixture(t, { managerToken: MANAGER_TOKEN });
+  await f.login();
+  const owner = await savePassword(f, TOKEN);
+  assert.equal(owner.status, 200);
+  const ownerCookie = owner.headers.get('set-cookie').split(';')[0];
+  await f.login(MANAGER_TOKEN);
+  const manager = await savePassword(f, MANAGER_TOKEN, NEXT_PASSWORD);
+  assert.equal(manager.status, 200);
+  f.setCookie(manager);
+  assert.equal((await savePassword(f, PASSWORD)).status, 403);
+  assert.equal((await savePassword(f, NEXT_PASSWORD, 'new-owner-password-value', { Cookie: ownerCookie })).status, 403);
+  assert.deepEqual(await (await f.request('/api/security')).json(), { role: 'manager', hasPassword: true });
 });
 
 test('CSV attachment escapes quotes and neutralizes spreadsheet formulas', async t => {

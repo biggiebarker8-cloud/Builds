@@ -14,9 +14,11 @@
       <div class="brand-mark">A<span>↗</span></div>
       <p class="eyebrow">THE ALLIANCE / AGENCY OPERATIONS</p>
       <h1>Your agency.<br>Your next chapter.</h1>
-      <p class="muted">A private, standalone workspace. Sign in with your owner or manager token configured on the server. Your credential determines your access.</p>
+      <p class="muted">A private, standalone workspace. Use your setup token for the first sign-in, then choose a password in Security.</p>
+      <label>Sign-in method<select id="login-method"><option value="token">Setup / recovery token</option><option value="password">Password</option></select></label>
       <form id="login-form">
-        <label>Workspace access token<input name="token" type="password" required autocomplete="current-password"></label>
+        <label id="login-role-label" hidden>Role<select name="role"><option value="owner">Owner</option><option value="manager">Manager</option></select></label>
+        <label><span id="login-credential-label">Workspace access token</span><input name="credential" type="password" required autocomplete="current-password" maxlength="4096"></label>
         <button type="submit">Open workspace <span aria-hidden="true">↗</span></button>
       </form>
       <p class="small muted">No TikTok or Lark password is needed.</p>
@@ -31,6 +33,7 @@
         <a href="#creators">◎ <span>Creator roster</span></a>
         <a href="#tasks">☷ <span>Operations</span></a>
         <a href="#connections">⇄ <span>Connections</span></a>
+        <a href="#security">⚿ <span>Security</span></a>
         <a href="https://www.tiktok.com/t/ZSg8eb83Q/" target="_blank" rel="noopener noreferrer">↗ <span>Agency link</span></a>
         <a href="https://www.tiktok.com/business/en" target="_blank" rel="noopener noreferrer">↗ <span>TikTok for Business</span></a>
         <a href="https://ads.tiktok.com/" target="_blank" rel="noopener noreferrer">↗ <span>TikTok Ads Manager</span></a>
@@ -69,6 +72,17 @@
           <div class="page-heading"><div><p class="eyebrow">OWNER ACCESS ONLY</p><h1>Payments &amp; charges</h1><p class="muted">Private records for payments and administrative charges.</p></div><button id="add-finance">+ Add record</button></div>
           <p class="callout">Manual ledger only. Saving or marking a record does not send money, charge anyone, verify settlement, or connect a payment provider. Do not enter card or bank details.</p>
           <div class="panel"><div class="table-scroll"><table><thead><tr><th>Date</th><th>Description</th><th>Type</th><th>Market</th><th>Amount</th><th>Status</th><th>Actions</th></tr></thead><tbody id="finance-rows"></tbody></table></div><p id="finance-empty" class="empty">No payment or administrative-charge records yet.</p></div>
+        </section>
+        <section id="security" class="page" hidden>
+          <div class="page-heading"><div><p class="eyebrow">YOUR ACCESS</p><h1>Set or change password</h1><p class="muted">Update the password for your signed-in role only. Owner and Manager permissions stay separate.</p></div></div>
+          <form id="password-form" class="panel settings-form">
+            <p id="password-status" class="muted"></p>
+            <label>Current password or your role's setup token<input name="currentCredential" type="password" required maxlength="4096" autocomplete="current-password"></label>
+            <label>New password<input name="password" type="password" required minlength="12" maxlength="128" autocomplete="new-password"></label>
+            <label>Confirm new password<input name="confirmation" type="password" required minlength="12" maxlength="128" autocomplete="new-password"></label>
+            <p class="small muted">Use a unique password of 12–128 characters. A password manager can generate and save it. Saving signs out other sessions for your role. Never use your TikTok or Lark password.</p>
+            <button type="submit">Save password</button>
+          </form>
         </section>
         <section id="settings" class="page" hidden>
           <div class="page-heading"><div><p class="eyebrow">OWNER ADMINISTRATION</p><h1>Agency settings</h1><p class="muted">Australia first. Keep future expansion deliberate. Managers cannot change these settings.</p></div></div>

@@ -1,7 +1,7 @@
 const $ = (selector) => document.querySelector(selector);
 let state;
 let notificationTimer;
-const pages = ['overview', 'creators', 'tasks', 'connections', 'finance', 'settings'];
+const pages = ['overview', 'creators', 'tasks', 'connections', 'finance', 'security', 'settings'];
 const ownerPages = ['finance', 'settings'];
 const isOwner = () => state?.role === 'owner';
 
@@ -19,7 +19,7 @@ async function api(path, options = {}) {
   });
   if (response.status === 401) {
     showLogin();
-    throw new Error('Please sign in with your workspace access token.');
+    throw new Error('Please sign in with your password or workspace access token.');
   }
   if (!response.ok) {
     const error = await response.json().catch(() => ({}));
@@ -55,6 +55,8 @@ function showLogin() {
   state = undefined;
   $('#finance-rows').replaceChildren();
   $('#finance-form').reset();
+  $('#password-form').reset();
+  $('#password-status').textContent = '';
   $('#role-badge').textContent = '';
   document.querySelectorAll('[data-owner-only]').forEach((element) => { element.hidden = true; });
 }
@@ -71,7 +73,7 @@ function route() {
   });
   $('#page-label').textContent = {
     overview: 'Overview', creators: 'Creator roster', tasks: 'Operations',
-    connections: 'Connections', finance: 'Payments & charges', settings: 'Agency settings',
+    connections: 'Connections', finance: 'Payments & charges', security: 'Security', settings: 'Agency settings',
   }[page];
 }
 
@@ -227,6 +229,8 @@ function updateClock() {
 
 async function refresh() {
   state = await api('/api/state');
+  const security = await api('/api/security');
+  $('#password-status').textContent = `${security.role === 'owner' ? 'Owner' : 'Manager'} access · ${security.hasPassword ? 'Password set. You can change it below.' : 'No password set yet. Use your setup token below to create one.'}`;
   render();
 }
 
@@ -244,12 +248,47 @@ function openCreator(creator) {
 $('#login-form').addEventListener('submit', (event) => {
   event.preventDefault();
   run(event.submitter, async () => {
-    await api('/api/login', { method: 'POST', body: JSON.stringify({ token: event.target.elements.token.value }) });
+    const form = event.target;
+    const credentials = $('#login-method').value === 'password'
+      ? { role: form.elements.role.value, password: form.elements.credential.value }
+      : { token: form.elements.credential.value };
+    await api('/api/login', { method: 'POST', body: JSON.stringify(credentials) });
     event.target.reset();
     await refresh();
     $('#login').hidden = true;
     $('#workspace').hidden = false;
     route();
+  });
+});
+
+$('#login-method').addEventListener('change', () => {
+  const password = $('#login-method').value === 'password';
+  $('#login-role-label').hidden = !password;
+  $('#login-credential-label').textContent = password ? 'Password' : 'Workspace access token';
+  const input = $('#login-form').elements.credential;
+  input.value = '';
+  input.maxLength = password ? 128 : 4096;
+});
+
+$('#password-form').addEventListener('submit', (event) => {
+  event.preventDefault();
+  const form = event.target;
+  if (form.elements.password.value !== form.elements.confirmation.value) {
+    notify('The new passwords do not match.');
+    form.elements.confirmation.focus();
+    return;
+  }
+  run(event.submitter, async () => {
+    const result = await api('/api/security/password', {
+      method: 'PUT',
+      body: JSON.stringify({
+        currentCredential: form.elements.currentCredential.value,
+        password: form.elements.password.value,
+      }),
+    });
+    form.reset();
+    await refresh();
+    notify(result.message);
   });
 });
 
