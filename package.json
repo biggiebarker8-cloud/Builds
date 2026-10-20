@@ -1,0 +1,16 @@
+{
+  "name": "alliance-agency-hub",
+  "version": "1.0.0",
+  "description": "Australia-first agency operations workspace",
+  "scripts": {
+    "test": "node --test",
+    "start": "node server.js",
+    "check": "node --check server.js && node --check public/app.js"
+  },
+  "license": "ISC",
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "private": true
+}
