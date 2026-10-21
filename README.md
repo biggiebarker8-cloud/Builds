@@ -148,7 +148,38 @@ the configured chat. Messages are limited to 2,000 characters. All messaging
 surfaces share a rate limit of ten sends per minute per direct client IP.
 Behind a reverse proxy, multiple users may share that limit.
 
-### Lark API, MCP, and ChatGPT Actions
+### Workspace and Lark MCP/API access
+
+`AGENCY_MCP_TOKEN` optionally enables a separate owner-authorized workspace MCP
+gateway at `POST /mcp`. Generate a random 32–4096 character token, keep it in
+server secrets, and ensure it differs from the owner, manager, and Lark
+automation tokens. Leave it unset to disable workspace MCP access. Any client
+holding this token can read and change creator roster, tasks, and agency settings.
+It cannot read, create, update, or delete payment or administrative-charge
+records. Rotate the token in server secrets and restart to revoke it.
+
+The workspace toolset also provides advertising and marketing skill guides for
+campaign strategy, audience research, brand and creative, social content, paid
+advertising, performance analysis, and search/email. These are guidance for an
+assistant to apply to supplied information—not connected ad accounts, live
+market research, campaign execution, or proof of performance. Provider
+integrations remain disconnected until their official authorization is
+implemented and verified. No tool can spend ad budget or administer payments or
+charges.
+
+The existing `GET /api/workspace-openapi.json` schema describes the workspace
+MCP JSON-RPC endpoint and is available only when `PUBLIC_ORIGIN` is configured
+with HTTPS. Connect ChatGPT or another compatible client to the deployed HTTPS
+`/mcp` endpoint using `AGENCY_MCP_TOKEN` in its private bearer-authentication
+settings. Where the client supports MCP, this enables workspace tools and the
+marketing guides. Keep the token private: it grants broad non-financial owner
+access. The workspace MCP service is not a new assistant model runtime; the
+three assistant runtimes must separately be configured to use this gateway and
+their permitted skills.
+
+Lark machine access remains separately scoped to the fixed-chat send operation.
+It uses a distinct `LARK_AUTOMATION_TOKEN`; it cannot sign in to the dashboard
+or read or manage workspace records.
 
 Machine access uses a **separate, Lark-only** `LARK_AUTOMATION_TOKEN` of
 32–4096 random characters, distinct from both workspace tokens. Leave it unset
@@ -162,8 +193,10 @@ to the dashboard or read creators, tasks, or finance records.
 | `POST /api/integrations/lark/messages` | Signed-in workspace session | Send `{message}` from the dashboard |
 | `GET /api/automation/lark/status` | Automation bearer token | Configuration status, not a verified connection |
 | `POST /api/automation/lark/messages` | Automation bearer token | Send `{message}` to the fixed server-configured chat |
-| `POST /mcp` | Automation bearer token | Stateless MCP JSON-RPC with Lark-only tools |
+| `POST /mcp` | `AGENCY_MCP_TOKEN` | Non-financial workspace tools and marketing skill guides |
+| `POST /mcp` | `LARK_AUTOMATION_TOKEN` | Stateless MCP JSON-RPC with Lark-only tools |
 | `GET /api/openapi.json` | Public schema, no credentials | Import schema for custom GPT Actions |
+| `GET /api/workspace-openapi.json` | Public schema, no credentials | Workspace MCP API schema; HTTPS required |
 
 The MCP endpoint implements JSON responses for the 2025-06-18 Streamable HTTP
 protocol: initialize, ping, tools/list, tools/call, and notification handling.

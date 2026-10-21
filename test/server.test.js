@@ -11,6 +11,7 @@ import { createApp } from '../server.js';
 
 const TOKEN = 'unit-test-only-token-not-for-production-123456';
 const MANAGER_TOKEN = 'unit-test-manager-only-not-for-production-654321';
+const WORKSPACE_MCP_TOKEN = 'unit-test-workspace-mcp-owner-key-not-production-789012';
 const creator = { handle: 'creator', market: 'AU', manager: '', status: 'prospect', liveHours: 0, revenue: 0, targetHours: 20 };
 const task = { title: 'Review creator', market: 'AU', dueDate: '2026-10-21' };
 const finance = { type: 'payment', description: 'Private manual payment', market: 'AU', amount: 12345.67, date: '2026-10-21', status: 'pending' };
@@ -22,7 +23,7 @@ async function fixture(t, options = {}) {
   let base;
   let cookie = '';
   async function start(overrides = {}) {
-    server = createApp({ dbPath, adminToken: TOKEN, managerToken: undefined, larkAutomationToken: undefined, publicOrigin: '', larkAppId: '', larkAppSecret: '', larkChatId: '', ...options, ...overrides });
+    server = createApp({ dbPath, adminToken: TOKEN, managerToken: undefined, workspaceMcpToken: undefined, larkAutomationToken: undefined, publicOrigin: '', larkAppId: '', larkAppSecret: '', larkChatId: '', ...options, ...overrides });
     server.listen(0, '127.0.0.1');
     await once(server, 'listening');
     base = `http://127.0.0.1:${server.address().port}`;
@@ -1024,4 +1025,107 @@ test('public GPT Actions OpenAPI requires trusted HTTPS and exposes only narrow 
   assert.equal(status.responses[200].content['application/json'].schema.properties.capabilities.type, 'array');
   assert.equal(message.responses[200].content['application/json'].schema.properties.message.type, 'string');
   assert.equal(mock.calls.length, 0);
+});
+
+test('workspace MCP credential is strong, owner-provisioned, and distinct from every other credential', async t => {
+  for (const workspaceMcpToken of ['', 'short', null, 123, 'x'.repeat(4097), TOKEN, MANAGER_TOKEN, AUTOMATION_TOKEN]) {
+    assert.throws(() => createApp({
+      dbPath: ':memory:', adminToken: TOKEN, managerToken: MANAGER_TOKEN,
+      larkAutomationToken: AUTOMATION_TOKEN, workspaceMcpToken,
+    }), /AGENCY_MCP_TOKEN/);
+  }
+  const f = await fixture(t, { workspaceMcpToken: WORKSPACE_MCP_TOKEN });
+  for (const headers of [{}, { Authorization: '' }, { Authorization: 'Basic ignored' }]) {
+    const response = await f.request('/mcp', 'POST', rpc('ping'), headers);
+    assert.equal(response.status, 401);
+  }
+  assert.equal((await f.request('/mcp', 'POST', rpc('ping'), {
+    Authorization: ['Bearer', WORKSPACE_MCP_TOKEN].join(' '),
+  })).status, 200);
+});
+
+test('workspace MCP manages only validated non-financial data and provides real marketing skill guides', async t => {
+  const f = await fixture(t, {
+    workspaceMcpToken: WORKSPACE_MCP_TOKEN, managerToken: MANAGER_TOKEN,
+  });
+  await f.login();
+  await f.request('/api/finance', 'POST', finance);
+  const workspaceHeaders = { Authorization: ['Bearer', WORKSPACE_MCP_TOKEN].join(' ') };
+  const call = async (name, args) => {
+    const response = await f.request('/mcp', 'POST',
+      rpc('tools/call', { name, arguments: args }), workspaceHeaders);
+    assert.equal(response.status, 200);
+    return response.json();
+  };
+  const listed = await (await f.request('/mcp', 'POST', rpc('tools/list'), workspaceHeaders)).json();
+  const names = listed.result.tools.map(tool => tool.name);
+  assert.deepEqual(names, [
+    'get_workspace_state', 'create_creator', 'update_creator', 'delete_creator',
+    'create_task', 'update_task', 'delete_task', 'update_agency_settings',
+    'list_marketing_skills', 'get_marketing_skill',
+  ]);
+  assert.ok(!names.some(name => /finance|payment|charge/iu.test(name)));
+  assert.deepEqual(listed.result.tools.find(tool => tool.name === 'delete_creator').annotations,
+    { destructiveHint: true, idempotentHint: false, readOnlyHint: false });
+
+  const creatorResult = await call('create_creator', creator);
+  const created = JSON.parse(creatorResult.result.content[0].text);
+  assert.deepEqual(created, { id: created.id, ...creator });
+  const invalidCreator = await call('create_creator', { ...creator, market: 'US' });
+  assert.equal(invalidCreator.result.isError, true);
+  const updatedCreator = await call('update_creator', { id: created.id, changes: { status: 'active', revenue: 125 } });
+  assert.deepEqual(JSON.parse(updatedCreator.result.content[0].text), { ...created, status: 'active', revenue: 125 });
+
+  const taskResult = await call('create_task', task);
+  const createdTask = JSON.parse(taskResult.result.content[0].text);
+  assert.deepEqual(createdTask, { id: createdTask.id, done: false, ...task });
+  const updatedTask = await call('update_task', { id: createdTask.id, changes: { done: true } });
+  assert.equal(JSON.parse(updatedTask.result.content[0].text).done, true);
+  const settingsResult = await call('update_agency_settings', { agencyName: 'Updated agency' });
+  assert.equal(JSON.parse(settingsResult.result.content[0].text).agencyName, 'Updated agency');
+
+  const stateResult = await call('get_workspace_state', {});
+  const stateText = stateResult.result.content[0].text;
+  const state = JSON.parse(stateText);
+  assert.deepEqual(state.creators, [{ ...created, status: 'active', revenue: 125 }]);
+  assert.equal(state.tasks[0].done, true);
+  assert.equal(state.settings.agencyName, 'Updated agency');
+  assert.equal(Object.hasOwn(state, 'finance'), false);
+  assert.doesNotMatch(stateText, /Private manual payment|12345\.67/u);
+
+  const skills = JSON.parse((await call('list_marketing_skills', {})).result.content[0].text);
+  assert.ok(skills.skills.includes('paid_advertising'));
+  const guide = JSON.parse((await call('get_marketing_skill', { skill: 'paid_advertising' })).result.content[0].text);
+  assert.match(guide.guide, /never place orders, change budgets/u);
+  const invalidSkill = await f.request('/mcp', 'POST',
+    rpc('tools/call', { name: 'get_marketing_skill', arguments: { skill: 'make_campaign_live' } }), workspaceHeaders);
+  assert.equal(invalidSkill.status, 400);
+
+  for (const name of ['get_finance', 'create_payment', 'list_charges']) {
+    const forbidden = await f.request('/mcp', 'POST',
+      rpc('tools/call', { name, arguments: {} }), workspaceHeaders);
+    assert.equal((await forbidden.json()).error.code, -32602);
+  }
+  assert.equal((await fetch(`${f.base}/api/finance`, { headers: workspaceHeaders })).status, 401);
+});
+
+test('workspace OpenAPI schema requires HTTPS origin and never publishes the bearer token', async t => {
+  for (const publicOrigin of ['', 'http://localhost:3000']) {
+    const f = await fixture(t, { publicOrigin, workspaceMcpToken: WORKSPACE_MCP_TOKEN });
+    assert.equal((await f.request('/api/workspace-openapi.json')).status, 503);
+  }
+  const f = await fixture(t, {
+    publicOrigin: 'https://agency.example.com', workspaceMcpToken: WORKSPACE_MCP_TOKEN,
+  });
+  const response = await f.request('/api/workspace-openapi.json');
+  assert.equal(response.status, 200);
+  const text = await response.text();
+  assert.doesNotMatch(text, new RegExp(WORKSPACE_MCP_TOKEN));
+  const schema = JSON.parse(text);
+  assert.equal(schema.openapi, '3.1.0');
+  assert.deepEqual(schema.servers, [{ url: 'https://agency.example.com' }]);
+  assert.deepEqual(schema.security, [{ workspaceBearer: [] }]);
+  assert.ok(schema.paths['/mcp'].post);
+  assert.deepEqual(schema.paths['/mcp'].post.requestBody.content['application/json'].schema,
+    { $ref: '#/components/schemas/JsonRpcRequest' });
 });
