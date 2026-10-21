@@ -6,6 +6,7 @@ import { chmodSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { handleMcp, larkOpenApi, messageRules } from './lark-tools.js';
+import { handleWorkspaceMcp, workspaceOpenApi } from './workspace-tools.js';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const MAX_BODY = 64 * 1024;
@@ -30,6 +31,7 @@ class HttpError extends Error {
   }
 }
 const invalid = (message = 'Invalid request.') => { throw new HttpError(400, message); };
+const objectValue = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const string = (value, max, empty = false) =>
   typeof value === 'string' && value.length <= max && (empty || value.trim().length > 0) &&
   !/[\u0000-\u001f\u007f]/u.test(value);
@@ -115,6 +117,7 @@ export function createApp({
   dbPath = process.env.AGENCY_DB_PATH || resolve(ROOT, 'data/agency.sqlite'),
   adminToken = process.env.AGENCY_ADMIN_TOKEN,
   managerToken = process.env.AGENCY_MANAGER_TOKEN,
+  workspaceMcpToken = process.env.AGENCY_MCP_TOKEN,
   publicOrigin = process.env.PUBLIC_ORIGIN,
   larkAppId = process.env.LARK_APP_ID,
   larkAppSecret = process.env.LARK_APP_SECRET,
@@ -146,6 +149,17 @@ export function createApp({
     if (timingSafeEqual(expectedTokenHash, automationTokenHash) ||
         (managerTokenHash && timingSafeEqual(managerTokenHash, automationTokenHash))) {
       throw new Error('LARK_AUTOMATION_TOKEN must differ from dashboard tokens.');
+    }
+  }
+  let workspaceMcpTokenHash;
+  if (workspaceMcpToken !== undefined) {
+    if (typeof workspaceMcpToken !== 'string' || workspaceMcpToken.length < 32 || workspaceMcpToken.length > 4096) {
+      throw new Error('AGENCY_MCP_TOKEN must contain between 32 and 4096 characters when set.');
+    }
+    workspaceMcpTokenHash = createHash('sha256').update(workspaceMcpToken).digest();
+    if ([expectedTokenHash, managerTokenHash, automationTokenHash].some(hash =>
+      hash && timingSafeEqual(hash, workspaceMcpTokenHash))) {
+      throw new Error('AGENCY_MCP_TOKEN must differ from dashboard and Lark automation tokens.');
     }
   }
   let trustedOrigin;
@@ -255,6 +269,13 @@ export function createApp({
       throw new HttpError(401, 'Authentication required.');
     }
   };
+  const workspaceMcpMatches = req => {
+    if (!workspaceMcpTokenHash) return false;
+    const parts = (req.headers.authorization || '').split(' ');
+    const value = parts[1] || '';
+    return parts.length === 2 && parts[0].toLowerCase() === 'bearer' && value.length <= 4096 &&
+      timingSafeEqual(createHash('sha256').update(value).digest(), workspaceMcpTokenHash);
+  };
   const getSettings = () => {
     const { id, ...settings } = db.prepare('SELECT * FROM settings WHERE id = 1').get();
     return { ...settings, ukEnabled: Boolean(settings.ukEnabled) };
@@ -330,7 +351,14 @@ export function createApp({
         throw new HttpError(405, 'Use POST.');
       }
       const machineRoute = path === '/mcp' || path.startsWith('/api/automation/');
-      if (machineRoute) requireAutomation(req);
+      let workspaceMcp = false;
+      if (path === '/mcp') {
+        workspaceMcp = workspaceMcpMatches(req);
+        if (!workspaceMcp) {
+          if (workspaceMcpTokenHash && !automationTokenHash) throw new HttpError(401, 'Authentication required.');
+          requireAutomation(req);
+        }
+      } else if (machineRoute) requireAutomation(req);
       if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
         const origin = req.headers.origin;
         const protocol = req.socket.encrypted ? 'https' : 'http';
@@ -343,9 +371,86 @@ export function createApp({
         req.bodyBytes = await readBody(req);
       }
       if (path === '/mcp') {
-        await handleMcp(req, res, {
-          send, status: larkStatus, sendMessage: message => sendLarkMessage(req, res, message),
-        });
+        if (workspaceMcp) {
+          await handleWorkspaceMcp(req, res, {
+            send,
+            execute: async (name, args) => {
+              const recordId = value => {
+                if (typeof value !== 'string' || !/^[a-f0-9-]{36}$/u.test(value)) invalid();
+                return value;
+              };
+              if (name === 'get_workspace_state') {
+                if (Object.keys(args).length) invalid();
+                return {
+                  creators: getCreators(), tasks: getTasks(), settings: getSettings(),
+                  integrations: {
+                    tiktok: { status: 'not_connected' },
+                    lark: { status: larkConfigured ? 'configured' : 'not_configured' },
+                  },
+                };
+              }
+              if (name === 'create_creator') {
+                const required = Object.keys(creatorRules);
+                const body = validate(args, creatorRules, required);
+                const record = { id: randomUUID(), ...body };
+                const keys = ['id', ...Object.keys(creatorRules)];
+                db.prepare(`INSERT INTO creators (${keys.join(',')}) VALUES (${keys.map(() => '?').join(',')})`)
+                  .run(...keys.map(key => record[key]));
+                return record;
+              }
+              if (name === 'update_creator') {
+                validate(args, { id: v => typeof v === 'string' && /^[a-f0-9-]{36}$/u.test(v), changes: objectValue }, ['id', 'changes']);
+                const id = recordId(args.id);
+                const body = validate(args.changes, creatorRules);
+                const existing = db.prepare('SELECT * FROM creators WHERE id=?').get(id);
+                if (!existing) throw new HttpError(404, 'Record not found.');
+                const keys = Object.keys(body);
+                db.prepare(`UPDATE creators SET ${keys.map(key => `${key}=?`).join(',')} WHERE id=?`)
+                  .run(...keys.map(key => body[key]), id);
+                return { ...existing, ...body };
+              }
+              if (name === 'delete_creator' || name === 'delete_task') {
+                validate(args, { id: v => typeof v === 'string' && /^[a-f0-9-]{36}$/u.test(v) }, ['id']);
+                const id = recordId(args.id);
+                const table = name === 'delete_creator' ? 'creators' : 'tasks';
+                const existing = db.prepare(`SELECT id FROM ${table} WHERE id=?`).get(id);
+                if (!existing) throw new HttpError(404, 'Record not found.');
+                db.prepare(`DELETE FROM ${table} WHERE id=?`).run(id);
+                return { deleted: true, id };
+              }
+              if (name === 'create_task') {
+                const body = validate(args, taskRules, ['title', 'market', 'dueDate']);
+                const record = { id: randomUUID(), done: false, ...body };
+                db.prepare('INSERT INTO tasks (id,title,market,dueDate,done) VALUES (?,?,?,?,?)')
+                  .run(record.id, record.title, record.market, record.dueDate, Number(record.done));
+                return record;
+              }
+              if (name === 'update_task') {
+                validate(args, { id: v => typeof v === 'string' && /^[a-f0-9-]{36}$/u.test(v), changes: objectValue }, ['id', 'changes']);
+                const id = recordId(args.id);
+                const body = validate(args.changes, { done: taskRules.done, title: taskRules.title, market: taskRules.market, dueDate: taskRules.dueDate });
+                const existing = db.prepare('SELECT * FROM tasks WHERE id=?').get(id);
+                if (!existing) throw new HttpError(404, 'Record not found.');
+                const keys = Object.keys(body);
+                db.prepare(`UPDATE tasks SET ${keys.map(key => `${key}=?`).join(',')} WHERE id=?`)
+                  .run(...keys.map(key => typeof body[key] === 'boolean' ? Number(body[key]) : body[key]), id);
+                return { ...existing, ...body, done: body.done ?? Boolean(existing.done) };
+              }
+              if (name === 'update_agency_settings') {
+                const body = validate(args, settingsRules);
+                const settings = { ...getSettings(), ...body };
+                db.prepare('UPDATE settings SET agencyName=?, accountHandle=?, auTimezone=?, ukEnabled=? WHERE id=1')
+                  .run(settings.agencyName, settings.accountHandle, settings.auTimezone, Number(settings.ukEnabled));
+                return settings;
+              }
+              throw new HttpError(404, 'Not found.');
+            },
+          });
+        } else {
+          await handleMcp(req, res, {
+            send, status: larkStatus, sendMessage: message => sendLarkMessage(req, res, message),
+          });
+        }
         return;
       }
       if (path === '/api/openapi.json' && method === 'GET') {
@@ -353,6 +458,13 @@ export function createApp({
           throw new HttpError(503, 'Configure HTTPS PUBLIC_ORIGIN to use the OpenAPI schema.');
         }
         send(res, 200, larkOpenApi(trustedOrigin));
+        return;
+      }
+      if (path === '/api/workspace-openapi.json' && method === 'GET') {
+        if (!trustedOrigin?.startsWith('https://')) {
+          throw new HttpError(503, 'Configure HTTPS PUBLIC_ORIGIN to use the OpenAPI schema.');
+        }
+        send(res, 200, workspaceOpenApi(trustedOrigin));
         return;
       }
       if (machineRoute) {
